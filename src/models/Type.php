@@ -23,6 +23,12 @@ use yii\db\Query;
  */
 class Type extends ActiveRecord
 {
+    /**
+     * Number of knowledge items of this type, archived ones included.
+     * Only set when loaded with `TypeQuery::withItemCount()`, else null.
+     */
+    public ?int $itemCount = null;
+
     public static function tableName()
     {
         return '{{%knowledge_library_type}}';

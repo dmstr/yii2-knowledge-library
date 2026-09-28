@@ -1,0 +1,21 @@
+<?php
+
+/**
+ * @var yii\web\View $this
+ * @var dmstr\knowledgeLibrary\models\Type $model
+ */
+
+use yii\helpers\Html;
+
+$this->title = Yii::t('knowledge-library', 'Create type');
+$this->context->setBreadcrumbs([
+    ['label' => Yii::t('knowledge-library', 'Types'), 'url' => ['index']],
+    $this->title,
+]);
+?>
+<div class="knowledge-library-type-create box box-default">
+    <div class="box-body">
+        <h1><?= Html::encode($this->title) ?></h1>
+        <?= $this->render('_form', ['model' => $model]) ?>
+    </div>
+</div>

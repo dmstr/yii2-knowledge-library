@@ -21,6 +21,13 @@ use yii\db\Query;
  */
 class Topic extends ActiveRecord
 {
+    /**
+     * Number of knowledge items assigned to this topic, archived ones
+     * included. Only set when loaded with `TopicQuery::withItemCount()`,
+     * else null.
+     */
+    public ?int $itemCount = null;
+
     public static function tableName()
     {
         return '{{%knowledge_library_topic}}';
