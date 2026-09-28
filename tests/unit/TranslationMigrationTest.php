@@ -158,66 +158,6 @@ class TranslationMigrationTest extends TestCase
         $this->assertSame(count($this->germanTranslations()), $this->countTranslationRows('de'));
     }
 
-    public function testPackageHasSeveralTranslationMigrations(): void
-    {
-        $this->assertGreaterThanOrEqual(2, count(static::translationMigrationClasses()));
-    }
-
-    public function testTranslationMigrationsDoNotOverlap(): void
-    {
-        $seen = [];
-        foreach (static::translationMigrationClasses() as $class) {
-            foreach ($this->translationsOf($class) as $category => $languages) {
-                $messages = [];
-                foreach ($languages as $translations) {
-                    $messages += array_fill_keys(array_map('strval', array_keys($translations)), true);
-                }
-                foreach (array_keys($messages) as $message) {
-                    $this->assertArrayNotHasKey(
-                        "$category/$message",
-                        $seen,
-                        "Message '$message' of category '$category' is in $class and in "
-                        . ($seen["$category/$message"] ?? '')
-                    );
-                    $seen["$category/$message"] = $class;
-                }
-            }
-        }
-    }
-
-    public function testDownOfLastMigrationKeepsRowsOfEarlierMigrations(): void
-    {
-        $classes = static::translationMigrationClasses();
-        $last = array_pop($classes);
-        $this->runTranslationMigration('up');
-
-        $this->runMigrationOf($last, 'down');
-
-        $expected = 0;
-        foreach ($classes as $class) {
-            $expected += count($this->translationsOf($class)[self::CATEGORY]['de'] ?? []);
-        }
-        $this->assertSame($expected, $this->countSourceRows(self::CATEGORY));
-        $this->assertSame($expected, $this->countTranslationRows('de'));
-        $this->assertSame('Titel', Yii::t('knowledge-library', 'Title', [], 'de'));
-    }
-
-    public function testDownOfFirstMigrationKeepsRowsOfLaterMigrations(): void
-    {
-        $classes = static::translationMigrationClasses();
-        $first = array_shift($classes);
-        $this->runTranslationMigration('up');
-
-        $this->runMigrationOf($first, 'down');
-
-        $expected = 0;
-        foreach ($classes as $class) {
-            $expected += count($this->translationsOf($class)[self::CATEGORY]['de'] ?? []);
-        }
-        $this->assertSame($expected, $this->countSourceRows(self::CATEGORY));
-        $this->assertSame($expected, $this->countTranslationRows('de'));
-    }
-
     public function testEveryUsedMessageHasGermanTranslation(): void
     {
         $translations = $this->germanTranslations();

@@ -111,7 +111,7 @@ return [
 
 ## Backend pages
 
-The backend module provides the following controllers. Routes are relative to the module ID, e.g. `/knowledge-library/item/index` for the configuration above.
+The backend module provides the following controllers. Routes are relative to the module ID, e.g. `/knowledge-library/item/index` for the configuration above. The module URL itself (`/knowledge-library`) opens the item library (`defaultRoute` is `item`).
 
 | Route | Purpose |
 | --- | --- |
@@ -184,9 +184,7 @@ phd5 applications map `'*'` to a `DbMessageSource` and need no further configura
 ],
 ```
 
-The texts are split into two migrations: `m260928_100200_knowledge_library_translations` for the models and `m260928_185600_knowledge_library_translations_2` for the backend pages. Both work the same way and have no source messages in common, so reverting one keeps the rows of the other.
-
-Each migration writes its source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the migration's translations and those of its source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
+The migration writes its source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the migration's translations and those of its source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
 
 Applications without a database message source must configure a message source for `knowledge-library*` themselves; providing the translations is then up to the application:
 

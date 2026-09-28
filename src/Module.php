@@ -23,6 +23,11 @@ class Module extends \yii\base\Module
     public const ROLE_ADMIN = 'KnowledgeLibraryAdmin';
 
     /**
+     * The module URL opens the item list.
+     */
+    public $defaultRoute = 'item';
+
+    /**
      * Name of the application component used as (flysystem-based) file
      * storage for version files.
      */
