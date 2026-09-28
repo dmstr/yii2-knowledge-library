@@ -21,6 +21,7 @@ use yii\db\ActiveQuery;
  * @property string $name
  * @property string|null $mime_type
  * @property int|null $size
+ * @property string|null $content_hash SHA-256 hex digest of the content
  * @property int $position
  * @property string|null $created_at
  * @property string|null $updated_at

@@ -8,11 +8,18 @@ use Yii;
 
 /**
  * Tests of the route permissions created by
- * m260928_185500_knowledge_library_routes.
+ * m260928_185500_knowledge_library_routes and
+ * m260928_203100_knowledge_library_routes_2.
  */
 class RoutePermissionTest extends WebTestCase
 {
-    private const MIGRATION = '/src/migrations/m260928_185500_knowledge_library_routes.php';
+    /**
+     * Route migrations in migration order, relative to the package root.
+     */
+    private const MIGRATIONS = [
+        '/src/migrations/m260928_185500_knowledge_library_routes.php',
+        '/src/migrations/m260928_203100_knowledge_library_routes_2.php',
+    ];
 
     private const EDITOR_ROUTES = [
         'item/index',
@@ -20,6 +27,13 @@ class RoutePermissionTest extends WebTestCase
         'item/view',
         'item/update',
         'item/source',
+        'version/create',
+        'version/update',
+        'version/publish',
+        'version/discard',
+        'file/download',
+        'relation/create',
+        'relation/delete',
     ];
 
     private const ADMIN_ONLY_ROUTES = [
@@ -42,7 +56,16 @@ class RoutePermissionTest extends WebTestCase
     public function testNoPrefixPermissionExists(): void
     {
         $authManager = Yii::$app->getAuthManager();
-        foreach (['knowledge-library', 'knowledge-library_item', 'knowledge-library_type', 'knowledge-library_topic'] as $name) {
+        $names = [
+            'knowledge-library',
+            'knowledge-library_item',
+            'knowledge-library_type',
+            'knowledge-library_topic',
+            'knowledge-library_version',
+            'knowledge-library_file',
+            'knowledge-library_relation',
+        ];
+        foreach ($names as $name) {
             $this->assertNull($authManager->getPermission($name), "Prefix permission '$name' must not exist.");
             $this->assertNull($authManager->getRole($name), "Prefix role '$name' must not exist.");
         }
@@ -67,7 +90,7 @@ class RoutePermissionTest extends WebTestCase
         ));
     }
 
-    public function testEditorMayUseItemPagesOnly(): void
+    public function testEditorMayUseEditorRoutesOnly(): void
     {
         $this->loginAs(Module::ROLE_EDITOR);
 
@@ -75,7 +98,7 @@ class RoutePermissionTest extends WebTestCase
         $this->assertRouteAccess(self::ADMIN_ONLY_ROUTES, false);
     }
 
-    public function testReviewerMayUseItemPagesOnly(): void
+    public function testReviewerMayUseEditorRoutesOnly(): void
     {
         $this->loginAs(Module::ROLE_REVIEWER);
 
@@ -106,7 +129,9 @@ class RoutePermissionTest extends WebTestCase
 
     public function testUpTwiceKeepsPermissionsAndChildren(): void
     {
-        $this->runMigrationFile(dirname(__DIR__, 2) . self::MIGRATION);
+        foreach (self::MIGRATIONS as $file) {
+            $this->runMigrationFile(dirname(__DIR__, 2) . $file);
+        }
 
         $this->assertSame($this->expectedPermissions(), $this->routePermissions());
         $this->assertSame(
@@ -121,19 +146,22 @@ class RoutePermissionTest extends WebTestCase
 
     public function testDownIsNotSupported(): void
     {
-        $file = dirname(__DIR__, 2) . self::MIGRATION;
-        require_once $file;
-        $migration = new \m260928_185500_knowledge_library_routes(['db' => Yii::$app->db, 'compact' => true]);
+        foreach (array_reverse(self::MIGRATIONS) as $file) {
+            $file = dirname(__DIR__, 2) . $file;
+            require_once $file;
+            $class = basename($file, '.php');
+            $migration = new $class(['db' => Yii::$app->db, 'compact' => true]);
 
-        ob_start();
-        try {
-            $result = $migration->down();
-        } finally {
-            ob_end_clean();
+            ob_start();
+            try {
+                $result = $migration->down();
+            } finally {
+                ob_end_clean();
+            }
+
+            $this->assertFalse($result, "Down of $class must not be supported.");
+            $this->assertSame($this->expectedPermissions(), $this->routePermissions());
         }
-
-        $this->assertFalse($result);
-        $this->assertSame($this->expectedPermissions(), $this->routePermissions());
     }
 
     /**

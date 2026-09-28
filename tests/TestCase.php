@@ -9,23 +9,45 @@ use dmstr\knowledgeLibrary\models\Type;
 use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\users\UserProviderInterface;
+use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 use m260928_100100_knowledge_library_schema;
+use m260928_203000_knowledge_library_versions;
 use Yii;
 use yii\base\Application;
 use yii\console\Application as ConsoleApplication;
 use yii\db\Connection;
+use yii\db\Migration;
+use yii\helpers\FileHelper;
 use yii\i18n\DbMessageSource;
 
 /**
  * Base test case with a fresh console application and an in-memory SQLite
  * database migrated to the package schema.
  *
+ * The application has a file storage component `fs`, a flysystem filesystem
+ * on a temporary directory of the test (see getStorageDir()), which is
+ * created on first use and removed in tearDown().
+ *
  * Subclasses may use another application class or change the configuration
  * by overriding applicationClass() and applicationConfig().
  */
 abstract class TestCase extends \PHPUnit\Framework\TestCase
 {
+    /**
+     * Name prefix of the temporary storage directories in the system temp
+     * directory.
+     */
+    public const STORAGE_DIR_PREFIX = 'knowledge-library-test-storage-';
+
     protected m260928_100100_knowledge_library_schema $schemaMigration;
+
+    protected m260928_203000_knowledge_library_versions $versionsMigration;
+
+    /**
+     * Temporary directory of the file storage `fs`, null until first use.
+     */
+    private ?string $storageDir = null;
 
     /**
      * Whether setUp() installs the German translations of the package via
@@ -48,7 +70,12 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         }
 
         require_once dirname(__DIR__) . '/src/migrations/m260928_100100_knowledge_library_schema.php';
+        require_once dirname(__DIR__) . '/src/migrations/m260928_203000_knowledge_library_versions.php';
         $this->schemaMigration = new m260928_100100_knowledge_library_schema([
+            'db' => Yii::$app->db,
+            'compact' => true,
+        ]);
+        $this->versionsMigration = new m260928_203000_knowledge_library_versions([
             'db' => Yii::$app->db,
             'compact' => true,
         ]);
@@ -76,8 +103,8 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
     }
 
     /**
-     * Configuration of the test application: an in-memory SQLite database and
-     * a DbMessageSource for `knowledge-library`.
+     * Configuration of the test application: an in-memory SQLite database, a
+     * DbMessageSource for `knowledge-library` and the file storage `fs`.
      */
     protected function applicationConfig(): array
     {
@@ -86,6 +113,7 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
             'basePath' => __DIR__,
             'vendorPath' => KNOWLEDGE_LIBRARY_VENDOR_DIR,
             'components' => [
+                'fs' => fn() => new Filesystem(new LocalFilesystemAdapter($this->getStorageDir())),
                 'db' => [
                     'class' => Connection::class,
                     'dsn' => 'sqlite::memory:',
@@ -116,7 +144,36 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         }
         Yii::$app = null;
 
+        if ($this->storageDir !== null) {
+            FileHelper::removeDirectory($this->storageDir);
+            $this->storageDir = null;
+        }
+
         parent::tearDown();
+    }
+
+    /**
+     * Temporary root directory of the file storage `fs`, created on first
+     * call and removed in tearDown().
+     */
+    protected function getStorageDir(): string
+    {
+        if ($this->storageDir === null) {
+            $dir = sys_get_temp_dir() . '/' . static::STORAGE_DIR_PREFIX . bin2hex(random_bytes(8));
+            FileHelper::createDirectory($dir);
+            $this->storageDir = $dir;
+        }
+
+        return $this->storageDir;
+    }
+
+    /**
+     * Absolute local path of a path inside the file storage `fs`, e.g. to
+     * assert that a stored file exists.
+     */
+    protected function getStoragePath(string $path): string
+    {
+        return $this->getStorageDir() . '/' . ltrim($path, '/');
     }
 
     /**
@@ -183,18 +240,34 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
     }
 
     /**
-     * Runs `up` or `down` of the schema migration without output.
+     * Runs `up` or `down` of all schema migrations without output: `up` in
+     * migration order, `down` in reverse order.
      */
     protected function runMigration(string $direction): void
     {
+        $migrations = [$this->schemaMigration, $this->versionsMigration];
+        if ($direction === 'down') {
+            $migrations = array_reverse($migrations);
+        }
+
+        foreach ($migrations as $migration) {
+            $this->runSchemaMigration($migration, $direction);
+        }
+    }
+
+    /**
+     * Runs `up` or `down` of the single migration without output.
+     */
+    protected function runSchemaMigration(Migration $migration, string $direction): void
+    {
         ob_start();
         try {
-            $result = $this->schemaMigration->{$direction}();
+            $result = $migration->{$direction}();
         } finally {
             $output = ob_get_clean();
         }
 
-        $this->assertNotFalse($result, "Schema migration $direction failed: $output");
+        $this->assertNotFalse($result, 'Migration ' . get_class($migration) . " $direction failed: $output");
     }
 
     protected function createType(array $attributes = []): Type

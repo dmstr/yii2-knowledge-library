@@ -13,6 +13,7 @@ use Yii;
 use yii\db\MigrationInterface;
 use yii\di\Container;
 use yii\helpers\ArrayHelper;
+use yii\helpers\FileHelper;
 use yii\helpers\Url;
 use yii\log\Logger;
 use yii\rbac\DbManager;
@@ -22,6 +23,7 @@ use yii\web\HttpException;
 use yii\web\MethodNotAllowedHttpException;
 use yii\web\Request;
 use yii\web\Response;
+use yii\web\UploadedFile;
 use yii\web\View;
 
 /**
@@ -31,7 +33,8 @@ use yii\web\View;
  * `knowledge-library` without layout, `dmstr\web\User` without session,
  * `yii\rbac\DbManager` on the test database with the RBAC tables of Yii and
  * all RBAC migrations of the package, an in-memory session for flash messages
- * and disabled asset bundles.
+ * and disabled asset bundles. The module uses the temporary file storage `fs`
+ * of TestCase.
  *
  * Requests run through `Yii::$app->runAction()`, so the access check of the
  * module (`AccessBehaviorTrait`) and the filters of the controllers apply:
@@ -42,6 +45,7 @@ use yii\web\View;
  * $this->post('type/create', ['Type' => ['name' => 'Law']]);
  * $this->assertRedirectsTo(['type/index']);
  * $this->assertSame('...', $this->getFlash('success'));
+ * $this->postFiles('version/update', ['next' => 1], ['mainFiles[]' => [$pdf, $docx]], ['id' => $id]);
  * ```
  */
 abstract class WebTestCase extends TestCase
@@ -56,11 +60,21 @@ abstract class WebTestCase extends TestCase
 
     private array $postBackup = [];
 
+    private array $filesBackup = [];
+
+    /**
+     * Temporary upload copies of the current postFiles() request.
+     *
+     * @var string[]
+     */
+    private array $uploadFiles = [];
+
     protected function setUp(): void
     {
         $this->serverBackup = $_SERVER;
         $this->getBackup = $_GET;
         $this->postBackup = $_POST;
+        $this->filesBackup = $_FILES;
         $_SESSION = [];
         TestIdentity::reset();
         Yii::setLogger(null);
@@ -82,6 +96,9 @@ abstract class WebTestCase extends TestCase
         $_SERVER = $this->serverBackup;
         $_GET = $this->getBackup;
         $_POST = $this->postBackup;
+        $_FILES = $this->filesBackup;
+        UploadedFile::reset();
+        $this->removeUploadFiles();
         unset($_SESSION);
     }
 
@@ -145,6 +162,7 @@ abstract class WebTestCase extends TestCase
         return [
             'class' => Module::class,
             'layout' => false,
+            'fileStorage' => 'fs',
         ];
     }
 
@@ -246,15 +264,132 @@ abstract class WebTestCase extends TestCase
     }
 
     /**
+     * Runs a POST request of the route with uploaded files, like a
+     * `multipart/form-data` form.
+     *
+     * `$files` maps field names to local source files. A field name is a
+     * plain name (`file`), a name with keys (`Version[file]`) or ends with
+     * `[]` for several files (`mainFiles[]`, `Version[files][]`); a list of
+     * files for a name without `[]` is treated as `<name>[]`. A file is its
+     * path or an array with `path` and optionally `name` (default: base name
+     * of the path), `type` (default: MIME type detected from the content),
+     * `size` (default: file size) and `error` (default: UPLOAD_ERR_OK).
+     *
+     * Each source file is copied to a temporary file used as `tmp_name`, so
+     * the source stays untouched; the copies are removed after the request.
+     * `UploadedFile::getInstanceByName()`/`getInstancesByName()` and
+     * `getInstance()`/`getInstances()` of a model see the files.
+     *
+     * @return string|Response|mixed
+     */
+    protected function postFiles(string $route, array $body, array $files, array $params = [])
+    {
+        $fileParams = [];
+        foreach ($files as $field => $spec) {
+            $field = (string)$field;
+            if (is_array($spec) && !isset($spec['path'])) {
+                if (!str_ends_with($field, '[]')) {
+                    $field .= '[]';
+                }
+                foreach ($spec as $item) {
+                    $this->addUploadedFile($fileParams, $field, $item);
+                }
+            } else {
+                $this->addUploadedFile($fileParams, $field, $spec);
+            }
+        }
+
+        try {
+            return $this->request('POST', $route, $params, $body, $fileParams);
+        } finally {
+            $this->removeUploadFiles();
+        }
+    }
+
+    /**
+     * Adds a file of postFiles() in the layout of `$_FILES` to the params.
+     *
+     * @param string|array $spec path or array with `path` and optional
+     * `name`, `type`, `size`, `error`
+     */
+    private function addUploadedFile(array &$fileParams, string $field, $spec): void
+    {
+        if (is_string($spec)) {
+            $spec = ['path' => $spec];
+        }
+        $this->assertIsArray($spec, "Invalid file for field '$field'.");
+        $this->assertArrayHasKey('path', $spec, "File of field '$field' has no path.");
+        $this->assertFileExists($spec['path'], "Source file of field '$field' does not exist.");
+
+        $tempName = tempnam(sys_get_temp_dir(), 'knowledge-library-test-upload-');
+        $this->assertNotFalse($tempName, 'Temporary upload file not created.');
+        $this->uploadFiles[] = $tempName;
+        $this->assertTrue(copy($spec['path'], $tempName), "Source file of field '$field' not copied.");
+
+        $info = [
+            'name' => $spec['name'] ?? basename($spec['path']),
+            'type' => $spec['type'] ?? (FileHelper::getMimeType($spec['path']) ?? 'application/octet-stream'),
+            'tmp_name' => $tempName,
+            'error' => $spec['error'] ?? UPLOAD_ERR_OK,
+            'size' => $spec['size'] ?? filesize($spec['path']),
+        ];
+
+        // `Model[attr][]` becomes `$_FILES['Model'][<info>]['attr'][<index>]`.
+        $this->assertSame(
+            1,
+            preg_match('/^([^\[]+)((?:\[[^\]]*\])*)$/', $field, $matches),
+            "Invalid field name '$field'."
+        );
+        $base = $matches[1];
+        preg_match_all('/\[([^\]]*)\]/', $matches[2], $keyMatches);
+        $keys = $keyMatches[1];
+
+        // Resolve `[]` to the next free index, the same for all info entries.
+        $names = $fileParams[$base]['name'] ?? null;
+        foreach ($keys as $i => $key) {
+            if ($key === '') {
+                $indexes = is_array($names) ? array_filter(array_keys($names), 'is_int') : [];
+                $key = $indexes === [] ? 0 : max($indexes) + 1;
+                $keys[$i] = $key;
+            }
+            $names = is_array($names) ? ($names[$key] ?? null) : null;
+        }
+
+        foreach ($info as $infoKey => $value) {
+            if ($keys === []) {
+                $fileParams[$base][$infoKey] = $value;
+                continue;
+            }
+            $target = &$fileParams[$base][$infoKey];
+            foreach ($keys as $key) {
+                $target = &$target[$key];
+            }
+            $target = $value;
+            unset($target);
+        }
+    }
+
+    private function removeUploadFiles(): void
+    {
+        foreach ($this->uploadFiles as $file) {
+            if (is_file($file)) {
+                unlink($file);
+            }
+        }
+        $this->uploadFiles = [];
+    }
+
+    /**
      * Runs a request of the route, relative to the module, like the web
      * application would: fresh request, response and view components, a fresh
      * module instance and action params from the query params. The session is
      * closed and reopened, so flash messages behave as in a sequence of HTTP
-     * requests.
+     * requests. `$_FILES` is set to `$files` (layout of `$_FILES`, see
+     * postFiles()) and the cached instances of UploadedFile are reset.
      *
      * @return string|Response|mixed
      */
-    protected function request(string $method, string $route, array $params = [], array $body = [])
+    protected function request(string $method, string $route, array $params = [], array $body = [], array $files = [])
     {
         $app = Yii::$app;
         $route = static::MODULE_ID . '/' . ltrim($route, '/');
@@ -262,6 +397,8 @@ abstract class WebTestCase extends TestCase
         $_SERVER['REQUEST_METHOD'] = $method;
         $_GET = $params;
         $_POST = $body;
+        $_FILES = $files;
+        UploadedFile::reset();
 
         $app->set('request', $this->requestConfig());
         $app->set('response', ['class' => Response::class]);

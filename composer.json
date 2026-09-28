@@ -18,9 +18,11 @@
         "dmstr/yii2-web": "^1.1",
         "eluhr/yii2-uuid-attribute-behavior": "^1.0",
         "kartik-v/yii2-widget-select2": "^2.2",
+        "league/flysystem": "^3.0",
         "yiisoft/yii2-bootstrap": "^2.0.10"
     },
     "require-dev": {
+        "league/flysystem-local": "^3.0",
         "phpunit/phpunit": "^10.5 || ^11 || ^12 || ^13"
     },
     "suggest": {

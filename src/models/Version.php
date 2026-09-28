@@ -37,6 +37,9 @@ use yii\db\ActiveQuery;
  * @property string|null $withdrawn_at
  * @property string|null $withdraw_reason
  * @property string|null $corrects_version_id
+ * @property string|null $draft_title
+ * @property string|null $draft_summary
+ * @property string|null $draft_topic_ids JSON list of topic IDs
  * @property string|null $created_at
  * @property string|null $updated_at
  * @property string|null $created_by

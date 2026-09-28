@@ -5,7 +5,9 @@ namespace dmstr\knowledgeLibrary;
 use dmstr\knowledgeLibrary\users\DefaultUserProvider;
 use dmstr\knowledgeLibrary\users\UserProviderInterface;
 use dmstr\web\traits\AccessBehaviorTrait;
+use League\Flysystem\FilesystemOperator;
 use Yii;
+use yii\base\InvalidConfigException;
 
 /**
  * Backend module for managing knowledge items.
@@ -29,7 +31,7 @@ class Module extends \yii\base\Module
 
     /**
      * Name of the application component used as (flysystem-based) file
-     * storage for version files.
+     * storage for version files, see getFilesystem().
      */
     public string $fileStorage = 'fs';
 
@@ -37,6 +39,19 @@ class Module extends \yii\base\Module
      * Target directory inside the file storage.
      */
     public string $targetPath = 'knowledge-library';
+
+    /**
+     * File extensions allowed for uploaded version files (lower case, without
+     * leading dot).
+     *
+     * @var string[]
+     */
+    public array $allowedExtensions = ['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'txt', 'jpg', 'jpeg', 'png', 'gif', 'webp'];
+
+    /**
+     * Maximum size of an uploaded version file in bytes.
+     */
+    public int $maxFileSize = 20 * 1024 * 1024;
 
     /**
      * Definition of a user provider object, registered as DI container
@@ -60,5 +75,40 @@ class Module extends \yii\base\Module
     public function getUserProvider(): UserProviderInterface
     {
         return DefaultUserProvider::resolve();
+    }
+
+    /**
+     * Returns the filesystem of the file storage component named by
+     * $fileStorage.
+     *
+     * The component is either a flysystem filesystem itself or a wrapper
+     * providing one through `getFilesystem()`, e.g. the file storage of
+     * eluhr/yii2-flysystem-rest-api. The package always works on the raw
+     * filesystem, so permission layers of such a wrapper do not apply.
+     *
+     * @throws InvalidConfigException if the component does not exist or
+     * provides no flysystem filesystem
+     */
+    public function getFilesystem(): FilesystemOperator
+    {
+        $component = Yii::$app->get($this->fileStorage);
+
+        if ($component instanceof FilesystemOperator) {
+            return $component;
+        }
+
+        if (is_object($component) && method_exists($component, 'getFilesystem')) {
+            $filesystem = $component->getFilesystem();
+            if ($filesystem instanceof FilesystemOperator) {
+                return $filesystem;
+            }
+        }
+
+        throw new InvalidConfigException(sprintf(
+            'The file storage component "%s" must implement %s or provide one through getFilesystem(), got %s.',
+            $this->fileStorage,
+            FilesystemOperator::class,
+            get_debug_type($component)
+        ));
     }
 }
