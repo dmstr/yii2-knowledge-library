@@ -10,15 +10,18 @@ use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\users\UserProviderInterface;
 use m260928_100100_knowledge_library_schema;
-use m260928_100200_knowledge_library_translations;
 use Yii;
-use yii\console\Application;
+use yii\base\Application;
+use yii\console\Application as ConsoleApplication;
 use yii\db\Connection;
 use yii\i18n\DbMessageSource;
 
 /**
  * Base test case with a fresh console application and an in-memory SQLite
  * database migrated to the package schema.
+ *
+ * Subclasses may use another application class or change the configuration
+ * by overriding applicationClass() and applicationConfig().
  */
 abstract class TestCase extends \PHPUnit\Framework\TestCase
 {
@@ -34,7 +37,51 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
     {
         parent::setUp();
 
-        new Application([
+        $this->mockApplication();
+
+        DummyUserProvider::$currentReference = DummyUserProvider::DEFAULT_REFERENCE;
+        Yii::$container->setSingleton(UserProviderInterface::class, DummyUserProvider::class);
+
+        $this->createMessageTables();
+        if ($this->installTranslations) {
+            $this->installTranslations();
+        }
+
+        require_once dirname(__DIR__) . '/src/migrations/m260928_100100_knowledge_library_schema.php';
+        $this->schemaMigration = new m260928_100100_knowledge_library_schema([
+            'db' => Yii::$app->db,
+            'compact' => true,
+        ]);
+        $this->runMigration('up');
+    }
+
+    /**
+     * Creates the application of the test, available as `Yii::$app`.
+     */
+    protected function mockApplication(): Application
+    {
+        $class = $this->applicationClass();
+
+        return new $class($this->applicationConfig());
+    }
+
+    /**
+     * Class of the test application.
+     *
+     * @return class-string<Application>
+     */
+    protected function applicationClass(): string
+    {
+        return ConsoleApplication::class;
+    }
+
+    /**
+     * Configuration of the test application: an in-memory SQLite database and
+     * a DbMessageSource for `knowledge-library`.
+     */
+    protected function applicationConfig(): array
+    {
+        return [
             'id' => 'knowledge-library-test',
             'basePath' => __DIR__,
             'vendorPath' => KNOWLEDGE_LIBRARY_VENDOR_DIR,
@@ -58,22 +105,7 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
                     ],
                 ],
             ],
-        ]);
-
-        DummyUserProvider::$currentReference = DummyUserProvider::DEFAULT_REFERENCE;
-        Yii::$container->setSingleton(UserProviderInterface::class, DummyUserProvider::class);
-
-        $this->createMessageTables();
-        if ($this->installTranslations) {
-            $this->installTranslations();
-        }
-
-        require_once dirname(__DIR__) . '/src/migrations/m260928_100100_knowledge_library_schema.php';
-        $this->schemaMigration = new m260928_100100_knowledge_library_schema([
-            'db' => Yii::$app->db,
-            'compact' => true,
-        ]);
-        $this->runMigration('up');
+        ];
     }
 
     protected function tearDown(): void
@@ -108,24 +140,46 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
     }
 
     /**
-     * Writes the German translations into the message tables.
+     * Writes the German translations into the message tables by running `up`
+     * of all translation migrations of the package.
      */
     protected function installTranslations(): void
     {
-        require_once dirname(__DIR__) . '/src/migrations/i18n/m260928_100200_knowledge_library_translations.php';
-        $migration = new m260928_100200_knowledge_library_translations([
-            'db' => Yii::$app->db,
-            'compact' => true,
-        ]);
+        foreach (static::translationMigrationClasses() as $class) {
+            $migration = new $class([
+                'db' => Yii::$app->db,
+                'compact' => true,
+            ]);
 
-        ob_start();
-        try {
-            $result = $migration->up();
-        } finally {
-            $output = ob_get_clean();
+            ob_start();
+            try {
+                $result = $migration->up();
+            } finally {
+                $output = ob_get_clean();
+            }
+
+            $this->assertNotFalse($result, "Translation migration $class failed: $output");
+        }
+    }
+
+    /**
+     * Loads the translation migrations in `src/migrations/i18n` and returns
+     * their class names in migration order.
+     *
+     * @return string[]
+     */
+    protected static function translationMigrationClasses(): array
+    {
+        $files = glob(dirname(__DIR__) . '/src/migrations/i18n/m*.php');
+        sort($files);
+
+        $classes = [];
+        foreach ($files as $file) {
+            require_once $file;
+            $classes[] = basename($file, '.php');
         }
 
-        $this->assertNotFalse($result, "Translation migration failed: $output");
+        return $classes;
     }
 
     /**

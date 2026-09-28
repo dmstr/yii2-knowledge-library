@@ -48,6 +48,7 @@ For types **without** a validity period versions have no dates; the published ve
 - Yii 2.0.45 or later
 - [dmstr/yii2-rbac-migration](https://github.com/dmstr/yii2-rbac-migration) for the RBAC setup
 - [dmstr/yii2-web](https://github.com/dmstr/yii2-web) for route-based access control
+- [yiisoft/yii2-bootstrap](https://github.com/yiisoft/yii2-bootstrap) and [kartik-v/yii2-widget-select2](https://github.com/kartik-v/yii2-widget-select2) for the backend views
 - An application component providing a flysystem-based file storage (default ID `fs`)
 
 The default user provider works with the identity and user UUIDs of [2amigos/yii2-usuario](https://github.com/2amigos/yii2-usuario).
@@ -108,6 +109,48 @@ return [
 | --- | --- | --- |
 | `backendModuleId` | `'knowledge-library'` | ID of the backend module whose configuration (file storage, user provider) the frontend module shares |
 
+## Backend pages
+
+The backend module provides the following controllers. Routes are relative to the module ID, e.g. `/knowledge-library/item/index` for the configuration above.
+
+| Route | Purpose |
+| --- | --- |
+| `item/index` | Item library: list with filters, sorting and paging |
+| `item/create` | Create an item (title and type) |
+| `item/view` | Detail page of an item |
+| `item/update` | Edit the master data of an item |
+| `item/source` | Edit the source data of an item |
+| `item/delete` | Delete an item with all its versions, files, relations and history (POST only) |
+| `type/index` | List of types |
+| `type/create` | Create a type |
+| `type/update` | Edit a type |
+| `type/delete` | Delete a type that is not used by any item (POST only) |
+| `topic/index` | List of topics |
+| `topic/create` | Create a topic |
+| `topic/update` | Edit a topic |
+| `topic/delete` | Delete a topic that is not used by any item (POST only) |
+
+The views use `yii\bootstrap\ActiveForm` and `yii\grid\GridView` with Bootstrap 3 markup, and the Select2 widget of `kartik-v/yii2-widget-select2`. They set `$this->title` and the breadcrumbs (`$this->params['breadcrumbs']`) and are rendered in the layout configured for the module (`layout` property).
+
+### Delete log
+
+Deleting an item is logged with `Yii::info()` in the category `knowledge-library`, including the reference of the current user, the ID and title of the item and the number of deleted versions. Info messages are usually not routed to a log target in production; to keep the entries, the application adds a target for the category:
+
+```php
+'components' => [
+    'log' => [
+        'targets' => [
+            'knowledge-library' => [
+                'class' => \yii\log\FileTarget::class,
+                'levels' => ['info'],
+                'categories' => ['knowledge-library*'],
+                'logVars' => [],
+            ],
+        ],
+    ],
+],
+```
+
 ## Migrations
 
 Add the migration path to the migrate controller of your console application:
@@ -141,7 +184,9 @@ phd5 applications map `'*'` to a `DbMessageSource` and need no further configura
 ],
 ```
 
-The migration writes the source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the package's translations and source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
+The texts are split into two migrations: `m260928_100200_knowledge_library_translations` for the models and `m260928_185600_knowledge_library_translations_2` for the backend pages. Both work the same way and have no source messages in common, so reverting one keeps the rows of the other.
+
+Each migration writes its source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the migration's translations and those of its source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
 
 Applications without a database message source must configure a message source for `knowledge-library*` themselves; providing the translations is then up to the application:
 
@@ -170,6 +215,21 @@ The backend module defines the following permissions:
 
 They are grouped into roles that build on each other: `KnowledgeLibraryAdmin` contains `KnowledgeLibraryReviewer`, which contains `KnowledgeLibraryEditor`.
 
+### Route permissions
+
+Every action of the backend module is checked against a permission named `<module-id>_<controller>_<action>`, e.g. `knowledge-library_item_delete`. The migration `m260928_185500_knowledge_library_routes` creates one permission per action and assigns them to the roles:
+
+| Permission | Role |
+| --- | --- |
+| `knowledge-library_item_index`, `knowledge-library_item_create`, `knowledge-library_item_view`, `knowledge-library_item_update`, `knowledge-library_item_source` | `KnowledgeLibraryEditor` |
+| `knowledge-library_item_delete` | `KnowledgeLibraryAdmin` |
+| `knowledge-library_type_index`, `knowledge-library_type_create`, `knowledge-library_type_update`, `knowledge-library_type_delete` | `KnowledgeLibraryAdmin` |
+| `knowledge-library_topic_index`, `knowledge-library_topic_create`, `knowledge-library_topic_update`, `knowledge-library_topic_delete` | `KnowledgeLibraryAdmin` |
+
+Reviewers and admins inherit the editor permissions through the role chain. The permission names assume the module ID `knowledge-library`; with another module ID the application creates the permissions itself.
+
+`dmstr\web\User` resolves route permissions by prefix: a permission `knowledge-library` grants every route of the module, `knowledge-library_item` every item action including `delete`. The package therefore creates no such permission; applications should not either unless they want to grant everything below it.
+
 Access to the frontend module is granted by a permission named exactly like its module ID, i.e. `knowledge` for the configuration above.
 
 ## Running tests
@@ -178,6 +238,8 @@ Access to the frontend module is granted by a permission named exactly like its 
 composer install
 vendor/bin/phpunit
 ```
+
+The suite `unit` tests the models and migrations on an in-memory SQLite database. The suite `web` runs the backend pages through `Yii::$app->runAction()` in a web application (`tests/WebTestCase.php`) with the RBAC migrations of the package applied, so the route permissions are tested as well.
 
 ## License
 

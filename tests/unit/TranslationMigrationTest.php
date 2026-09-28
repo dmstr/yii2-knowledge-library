@@ -3,7 +3,6 @@
 namespace dmstr\knowledgeLibrary\tests\unit;
 
 use dmstr\knowledgeLibrary\tests\TestCase;
-use m260928_100200_knowledge_library_translations;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use ReflectionClass;
@@ -19,14 +18,6 @@ class TranslationMigrationTest extends TestCase
      * Start with empty message tables.
      */
     protected bool $installTranslations = false;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        require_once dirname(__DIR__, 2)
-            . '/src/migrations/i18n/m260928_100200_knowledge_library_translations.php';
-    }
 
     public function testUpInsertsSourceMessagesAndGermanTranslations(): void
     {
@@ -167,6 +158,66 @@ class TranslationMigrationTest extends TestCase
         $this->assertSame(count($this->germanTranslations()), $this->countTranslationRows('de'));
     }
 
+    public function testPackageHasSeveralTranslationMigrations(): void
+    {
+        $this->assertGreaterThanOrEqual(2, count(static::translationMigrationClasses()));
+    }
+
+    public function testTranslationMigrationsDoNotOverlap(): void
+    {
+        $seen = [];
+        foreach (static::translationMigrationClasses() as $class) {
+            foreach ($this->translationsOf($class) as $category => $languages) {
+                $messages = [];
+                foreach ($languages as $translations) {
+                    $messages += array_fill_keys(array_map('strval', array_keys($translations)), true);
+                }
+                foreach (array_keys($messages) as $message) {
+                    $this->assertArrayNotHasKey(
+                        "$category/$message",
+                        $seen,
+                        "Message '$message' of category '$category' is in $class and in "
+                        . ($seen["$category/$message"] ?? '')
+                    );
+                    $seen["$category/$message"] = $class;
+                }
+            }
+        }
+    }
+
+    public function testDownOfLastMigrationKeepsRowsOfEarlierMigrations(): void
+    {
+        $classes = static::translationMigrationClasses();
+        $last = array_pop($classes);
+        $this->runTranslationMigration('up');
+
+        $this->runMigrationOf($last, 'down');
+
+        $expected = 0;
+        foreach ($classes as $class) {
+            $expected += count($this->translationsOf($class)[self::CATEGORY]['de'] ?? []);
+        }
+        $this->assertSame($expected, $this->countSourceRows(self::CATEGORY));
+        $this->assertSame($expected, $this->countTranslationRows('de'));
+        $this->assertSame('Titel', Yii::t('knowledge-library', 'Title', [], 'de'));
+    }
+
+    public function testDownOfFirstMigrationKeepsRowsOfLaterMigrations(): void
+    {
+        $classes = static::translationMigrationClasses();
+        $first = array_shift($classes);
+        $this->runTranslationMigration('up');
+
+        $this->runMigrationOf($first, 'down');
+
+        $expected = 0;
+        foreach ($classes as $class) {
+            $expected += count($this->translationsOf($class)[self::CATEGORY]['de'] ?? []);
+        }
+        $this->assertSame($expected, $this->countSourceRows(self::CATEGORY));
+        $this->assertSame($expected, $this->countTranslationRows('de'));
+    }
+
     public function testEveryUsedMessageHasGermanTranslation(): void
     {
         $translations = $this->germanTranslations();
@@ -196,11 +247,30 @@ class TranslationMigrationTest extends TestCase
     }
 
     /**
-     * Runs `up` or `down` of the translation migration, returns its output.
+     * Runs `up` of all translation migrations in migration order, or `down`
+     * in reverse order, returns their output.
      */
     private function runTranslationMigration(string $direction): string
     {
-        $migration = new m260928_100200_knowledge_library_translations([
+        $classes = static::translationMigrationClasses();
+        if ($direction === 'down') {
+            $classes = array_reverse($classes);
+        }
+
+        $output = '';
+        foreach ($classes as $class) {
+            $output .= $this->runMigrationOf($class, $direction);
+        }
+
+        return $output;
+    }
+
+    /**
+     * Runs `up` or `down` of one translation migration, returns its output.
+     */
+    private function runMigrationOf(string $class, string $direction): string
+    {
+        $migration = new $class([
             'db' => Yii::$app->db,
             'compact' => true,
         ]);
@@ -212,20 +282,32 @@ class TranslationMigrationTest extends TestCase
             $output = ob_get_clean();
         }
 
-        $this->assertNotFalse($result, "Translation migration $direction failed: $output");
+        $this->assertNotFalse($result, "Translation migration $class $direction failed: $output");
 
         return $output;
     }
 
     /**
+     * German translations of all translation migrations, keyed by message.
+     *
      * @return array<string, string>
      */
     private function germanTranslations(): array
     {
-        $translations = (new ReflectionClass(m260928_100200_knowledge_library_translations::class))
-            ->getConstant('TRANSLATIONS');
+        $merged = [];
+        foreach (static::translationMigrationClasses() as $class) {
+            $merged += $this->translationsOf($class)[self::CATEGORY]['de'] ?? [];
+        }
 
-        return $translations[self::CATEGORY]['de'];
+        return $merged;
+    }
+
+    /**
+     * The `TRANSLATIONS` constant of the migration class.
+     */
+    private function translationsOf(string $class): array
+    {
+        return (new ReflectionClass($class))->getConstant('TRANSLATIONS');
     }
 
     private function countSourceRows(string $category): int
