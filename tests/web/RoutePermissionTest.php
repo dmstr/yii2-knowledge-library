@@ -8,8 +8,9 @@ use Yii;
 
 /**
  * Tests of the route permissions created by
- * m260928_185500_knowledge_library_routes and
- * m260928_203100_knowledge_library_routes_2.
+ * m260928_185500_knowledge_library_routes,
+ * m260928_203100_knowledge_library_routes_2 and
+ * m260928_223100_knowledge_library_routes_3.
  */
 class RoutePermissionTest extends WebTestCase
 {
@@ -19,6 +20,7 @@ class RoutePermissionTest extends WebTestCase
     private const MIGRATIONS = [
         '/src/migrations/m260928_185500_knowledge_library_routes.php',
         '/src/migrations/m260928_203100_knowledge_library_routes_2.php',
+        '/src/migrations/m260928_223100_knowledge_library_routes_3.php',
     ];
 
     private const EDITOR_ROUTES = [
@@ -31,9 +33,17 @@ class RoutePermissionTest extends WebTestCase
         'version/update',
         'version/publish',
         'version/discard',
+        'version/withdraw',
+        'version/correct',
         'file/download',
         'relation/create',
         'relation/delete',
+    ];
+
+    private const REVIEWER_ROUTES = [
+        'version/review',
+        'version/approve',
+        'version/return',
     ];
 
     private const ADMIN_ONLY_ROUTES = [
@@ -46,6 +56,9 @@ class RoutePermissionTest extends WebTestCase
         'topic/update',
         'topic/delete',
         'item/delete',
+        'item/archive',
+        'item/restore',
+        'version/reviewer',
     ];
 
     public function testMigrationCreatesExactlyTheRoutePermissions(): void
@@ -79,7 +92,10 @@ class RoutePermissionTest extends WebTestCase
             $this->permissionNames(self::EDITOR_ROUTES),
             $this->routeChildren(Module::ROLE_EDITOR)
         );
-        $this->assertSame([], $this->routeChildren(Module::ROLE_REVIEWER));
+        $this->assertSame(
+            $this->permissionNames(self::REVIEWER_ROUTES),
+            $this->routeChildren(Module::ROLE_REVIEWER)
+        );
         $this->assertSame(
             $this->permissionNames(self::ADMIN_ONLY_ROUTES),
             $this->routeChildren(Module::ROLE_ADMIN)
@@ -95,14 +111,15 @@ class RoutePermissionTest extends WebTestCase
         $this->loginAs(Module::ROLE_EDITOR);
 
         $this->assertRouteAccess(self::EDITOR_ROUTES, true);
+        $this->assertRouteAccess(self::REVIEWER_ROUTES, false);
         $this->assertRouteAccess(self::ADMIN_ONLY_ROUTES, false);
     }
 
-    public function testReviewerMayUseEditorRoutesOnly(): void
+    public function testReviewerMayUseEditorAndReviewerRoutesOnly(): void
     {
         $this->loginAs(Module::ROLE_REVIEWER);
 
-        $this->assertRouteAccess(self::EDITOR_ROUTES, true);
+        $this->assertRouteAccess(array_merge(self::EDITOR_ROUTES, self::REVIEWER_ROUTES), true);
         $this->assertRouteAccess(self::ADMIN_ONLY_ROUTES, false);
     }
 
@@ -110,21 +127,21 @@ class RoutePermissionTest extends WebTestCase
     {
         $this->loginAs(Module::ROLE_ADMIN);
 
-        $this->assertRouteAccess(array_merge(self::EDITOR_ROUTES, self::ADMIN_ONLY_ROUTES), true);
+        $this->assertRouteAccess($this->allRoutes(), true);
     }
 
     public function testUserWithoutRoleMayUseNoRoute(): void
     {
         $this->loginAs();
 
-        $this->assertRouteAccess(array_merge(self::EDITOR_ROUTES, self::ADMIN_ONLY_ROUTES), false);
+        $this->assertRouteAccess($this->allRoutes(), false);
     }
 
     public function testGuestMayUseNoRoute(): void
     {
         $this->loginAsGuest();
 
-        $this->assertRouteAccess(array_merge(self::EDITOR_ROUTES, self::ADMIN_ONLY_ROUTES), false);
+        $this->assertRouteAccess($this->allRoutes(), false);
     }
 
     public function testUpTwiceKeepsPermissionsAndChildren(): void
@@ -137,6 +154,10 @@ class RoutePermissionTest extends WebTestCase
         $this->assertSame(
             $this->permissionNames(self::EDITOR_ROUTES),
             $this->routeChildren(Module::ROLE_EDITOR)
+        );
+        $this->assertSame(
+            $this->permissionNames(self::REVIEWER_ROUTES),
+            $this->routeChildren(Module::ROLE_REVIEWER)
         );
         $this->assertSame(
             $this->permissionNames(self::ADMIN_ONLY_ROUTES),
@@ -196,9 +217,17 @@ class RoutePermissionTest extends WebTestCase
     /**
      * @return string[]
      */
+    private function allRoutes(): array
+    {
+        return array_merge(self::EDITOR_ROUTES, self::REVIEWER_ROUTES, self::ADMIN_ONLY_ROUTES);
+    }
+
+    /**
+     * @return string[]
+     */
     private function expectedPermissions(): array
     {
-        return $this->permissionNames(array_merge(self::EDITOR_ROUTES, self::ADMIN_ONLY_ROUTES));
+        return $this->permissionNames($this->allRoutes());
     }
 
     /**

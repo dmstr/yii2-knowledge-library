@@ -419,14 +419,20 @@ class Version extends ActiveRecord
      * summary and topics are taken from the item. For types with validity
      * period Valid From is prefilled, see getSuggestedValidFrom().
      *
-     * An item has at most one draft. If saving fails (e.g. a concurrent
-     * request created a draft meanwhile), the returned version is not saved
-     * (`getIsNewRecord()` is true) and carries the errors.
+     * An item has at most one draft. No draft is created while another
+     * version of the item is in review or the item is archived. In these
+     * cases, and if saving fails (e.g. a concurrent request created a draft
+     * meanwhile), the returned version is not saved (`getIsNewRecord()` is
+     * true) and carries the errors.
      *
      * @param string|null $today date in the format `Y-m-d`, today if null
      */
     public static function createDraft(Item $item, ?string $today = null): self
     {
+        if ($item->is_archived) {
+            return static::rejectedDraft($item, Item::archivedMessage());
+        }
+
         $existing = static::find()
             ->forItem($item->id)
             ->andWhere(['status' => self::STATUS_DRAFT])
@@ -435,6 +441,17 @@ class Version extends ActiveRecord
             ->one();
         if ($existing !== null) {
             return $existing;
+        }
+
+        $inReview = static::find()
+            ->forItem($item->id)
+            ->andWhere(['status' => self::STATUS_IN_REVIEW])
+            ->exists();
+        if ($inReview) {
+            return static::rejectedDraft(
+                $item,
+                Yii::t('knowledge-library', 'This item already has a version in review.')
+            );
         }
 
         $base = $item->getLatestPublishedVersion();
@@ -476,6 +493,20 @@ class Version extends ActiveRecord
         }
 
         unset($draft->files, $draft->mainFiles, $draft->attachments);
+
+        return $draft;
+    }
+
+    /**
+     * Unsaved draft of the item carrying the error, see createDraft().
+     */
+    private static function rejectedDraft(Item $item, string $error): self
+    {
+        $draft = new static();
+        $draft->item_id = $item->id;
+        $draft->status = self::STATUS_DRAFT;
+        $draft->populateRelation('item', $item);
+        $draft->addError('status', $error);
 
         return $draft;
     }
@@ -615,6 +646,11 @@ class Version extends ActiveRecord
     /**
      * Submits a draft for review by the given reviewer.
      *
+     * Four-eyes principle: the reviewer must be one of the reviewer options of
+     * the user provider and must not be the current user. A previous return
+     * (`return_note`, `returned_by`, `returned_at`) is cleared. Writes the
+     * history entry `review_requested` with the message as reason.
+     *
      * @return bool whether the version was saved; see the errors otherwise
      */
     public function submitForReview(string $reviewerId, ?string $message = null): bool
@@ -625,31 +661,181 @@ class Version extends ActiveRecord
             return false;
         }
 
+        if (!$this->checkNotArchived()) {
+            return false;
+        }
+
+        $users = DefaultUserProvider::resolve();
+        $current = $users->getCurrentUserReference();
+        $reviewerId = trim($reviewerId);
+        if ($reviewerId === '') {
+            $this->addError('reviewer_id', Yii::t('knowledge-library', 'Select a reviewer.'));
+
+            return false;
+        }
+        if ($current !== null && $reviewerId === $current) {
+            $this->addError('reviewer_id', Yii::t('knowledge-library', 'You cannot review your own version.'));
+
+            return false;
+        }
+        if (!$this->checkReviewerOption($reviewerId)) {
+            return false;
+        }
+
+        $message = $message === null || trim($message) === '' ? null : trim($message);
+
         return $this->transition([
             'status' => self::STATUS_IN_REVIEW,
             'reviewer_id' => $reviewerId,
             'review_message' => $message,
-            'review_requested_by' => DefaultUserProvider::resolve()->getCurrentUserReference(),
+            'review_requested_by' => $current,
             'review_requested_at' => date(self::DATETIME_FORMAT),
-        ]);
+            'return_note' => null,
+            'returned_by' => null,
+            'returned_at' => null,
+        ], null, fn () => $this->log(History::ACTION_REVIEW_REQUESTED, $message, ['reviewer' => $reviewerId]));
     }
 
     /**
      * Publishes the version. For types with a validity period the latest
      * published version is ended the day before this version starts.
      *
-     * A version in review can always be published, a draft only if the type
-     * of the item does not require a review.
+     * A draft can only be published if the type of the item does not require
+     * a review. A version in review can only be published by its reviewer
+     * (four-eyes principle), see also approve(). Versions of an archived item
+     * cannot be published.
      *
      * If the draft carries details (`draft_title` not null), title, summary
      * and topics are applied to the item and the draft fields are cleared,
      * in the same transaction.
      *
+     * Writes the history entry `published`, for a version in review preceded
+     * by `approved`.
+     *
      * @return bool whether the version was saved; see the errors otherwise
      */
     public function publish(): bool
     {
+        return $this->publishVersion(null);
+    }
+
+    /**
+     * Approves and publishes a version in review; only the reviewer may
+     * approve. The note is stored as reason of the history entry `approved`.
+     *
+     * @return bool whether the version was saved; see the errors otherwise
+     */
+    public function approve(?string $note = null): bool
+    {
+        if ($this->status !== self::STATUS_IN_REVIEW) {
+            $this->addError('status', Yii::t('knowledge-library', 'Only a version in review can be approved.'));
+
+            return false;
+        }
+
+        return $this->publishVersion($note);
+    }
+
+    /**
+     * Returns a version in review to its author as draft; only the reviewer
+     * may return it and a note is required. Reviewer and review message are
+     * kept, so the author can submit it again. Writes the history entry
+     * `returned` with the note as reason.
+     *
+     * @return bool whether the version was saved; see the errors otherwise
+     */
+    public function returnToDraft(string $note): bool
+    {
+        if ($this->status !== self::STATUS_IN_REVIEW) {
+            $this->addError('status', Yii::t('knowledge-library', 'Only a version in review can be returned.'));
+
+            return false;
+        }
+
+        if (!$this->checkIsReviewer()) {
+            return false;
+        }
+
+        $note = trim($note);
+        if ($note === '') {
+            $this->addError('return_note', Yii::t('knowledge-library', 'Enter a note for the author.'));
+
+            return false;
+        }
+
+        return $this->transition([
+            'status' => self::STATUS_DRAFT,
+            'return_note' => $note,
+            'returned_by' => DefaultUserProvider::resolve()->getCurrentUserReference(),
+            'returned_at' => date(self::DATETIME_FORMAT),
+        ], null, fn () => $this->log(History::ACTION_RETURNED, $note, ['reviewer' => $this->reviewer_id]));
+    }
+
+    /**
+     * Hands the review of a version in review over to another reviewer. The
+     * new reviewer must be one of the reviewer options, must differ from the
+     * current reviewer and must not be the person who submitted the version.
+     * Writes the history entry `reviewer_changed` with the reason.
+     *
+     * @return bool whether the version was saved; see the errors otherwise
+     */
+    public function changeReviewer(string $reviewerId, ?string $reason = null): bool
+    {
+        if ($this->status !== self::STATUS_IN_REVIEW) {
+            $this->addError(
+                'status',
+                Yii::t('knowledge-library', 'Only the reviewer of a version in review can be changed.')
+            );
+
+            return false;
+        }
+
+        $reviewerId = trim($reviewerId);
+        if ($reviewerId === '') {
+            $this->addError('reviewer_id', Yii::t('knowledge-library', 'Select a reviewer.'));
+
+            return false;
+        }
+        if ($reviewerId === $this->reviewer_id) {
+            $this->addError(
+                'reviewer_id',
+                Yii::t('knowledge-library', 'The selected person already reviews this version.')
+            );
+
+            return false;
+        }
+        if ($reviewerId === $this->review_requested_by) {
+            $this->addError(
+                'reviewer_id',
+                Yii::t('knowledge-library', 'The person who submitted the version cannot review it.')
+            );
+
+            return false;
+        }
+        if (!$this->checkReviewerOption($reviewerId)) {
+            return false;
+        }
+
+        $previous = $this->reviewer_id;
+
+        return $this->transition(
+            ['reviewer_id' => $reviewerId],
+            null,
+            fn () => $this->log(History::ACTION_REVIEWER_CHANGED, $reason, [
+                'reviewer' => $reviewerId,
+                'previous_reviewer' => $previous,
+            ])
+        );
+    }
+
+    /**
+     * Publishes the version, see publish(); the note is the reason of the
+     * history entry `approved` of a version in review.
+     */
+    private function publishVersion(?string $note): bool
+    {
         $type = $this->getItemType();
+        $inReview = $this->status === self::STATUS_IN_REVIEW;
 
         if ($this->status === self::STATUS_DRAFT) {
             if ($type === null || $type->requires_review) {
@@ -660,7 +846,7 @@ class Version extends ActiveRecord
 
                 return false;
             }
-        } elseif ($this->status !== self::STATUS_IN_REVIEW) {
+        } elseif (!$inReview) {
             $this->addError(
                 'status',
                 Yii::t('knowledge-library', 'Only a draft or a version in review can be published.')
@@ -669,11 +855,88 @@ class Version extends ActiveRecord
             return false;
         }
 
+        if (!$this->checkNotArchived()) {
+            return false;
+        }
+
+        if ($inReview && !$this->checkIsReviewer()) {
+            return false;
+        }
+
         return $this->transition([
             'status' => self::STATUS_PUBLISHED,
             'published_by' => DefaultUserProvider::resolve()->getCurrentUserReference(),
             'published_at' => date(self::DATETIME_FORMAT),
-        ], fn () => $this->endPredecessor() && $this->applyDraftDetails());
+        ], fn () => $this->endPredecessor() && $this->applyDraftDetails(), function () use ($inReview, $note) {
+            if ($inReview) {
+                $this->log(History::ACTION_APPROVED, $note, ['reviewer' => $this->reviewer_id]);
+            }
+            $this->log(
+                History::ACTION_PUBLISHED,
+                null,
+                $this->valid_from !== null ? ['valid_from' => $this->valid_from] : null
+            );
+        });
+    }
+
+    /**
+     * Whether the current user is the reviewer of this version; adds an
+     * error otherwise.
+     */
+    private function checkIsReviewer(): bool
+    {
+        $current = DefaultUserProvider::resolve()->getCurrentUserReference();
+        if ($current === null || $current !== $this->reviewer_id) {
+            $this->addError('status', Yii::t('knowledge-library', 'You are not the reviewer of this version.'));
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether the reference is one of the reviewer options of the user
+     * provider; adds an error otherwise.
+     */
+    private function checkReviewerOption(string $reviewerId): bool
+    {
+        if (!array_key_exists($reviewerId, DefaultUserProvider::resolve()->getReviewerOptions())) {
+            $this->addError(
+                'reviewer_id',
+                Yii::t('knowledge-library', 'The selected person cannot review this version.')
+            );
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether the item of this version is not archived; adds an error
+     * otherwise.
+     */
+    private function checkNotArchived(): bool
+    {
+        $item = $this->item;
+        if ($item instanceof Item && $item->is_archived) {
+            $this->addError('status', Item::archivedMessage());
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Writes a history entry for this version, see History::log().
+     *
+     * @param array<string, mixed>|null $details
+     */
+    private function log(string $action, ?string $reason = null, ?array $details = null): History
+    {
+        return History::log($this->item, $action, $this, $reason, $details);
     }
 
     /**
@@ -684,10 +947,14 @@ class Version extends ActiveRecord
      *
      * @param callable|null $beforeSave called after a successful validation,
      * returning false aborts the transition
+     * @param callable|null $afterSave called after saving, in the same
+     * transaction, e.g. to write history entries; returning false or throwing
+     * aborts the transition
      */
-    private function transition(array $attributes, ?callable $beforeSave = null): bool
+    private function transition(array $attributes, ?callable $beforeSave = null, ?callable $afterSave = null): bool
     {
         $previous = $this->getAttributes();
+        $previousOld = $this->getOldAttributes();
         $scenario = $this->getScenario();
         // Transitions validate all rules, whatever step was edited last.
         $this->setScenario(self::SCENARIO_DEFAULT);
@@ -699,6 +966,7 @@ class Version extends ActiveRecord
                 $this->validate()
                 && ($beforeSave === null || $beforeSave() !== false)
                 && $this->save(false)
+                && ($afterSave === null || $afterSave() !== false)
             ) {
                 $transaction->commit();
                 $this->setScenario($scenario);
@@ -710,12 +978,15 @@ class Version extends ActiveRecord
         } catch (Throwable $e) {
             $transaction->rollBack();
             $this->setAttributes($previous, false);
+            $this->setOldAttributes($previousOld);
             $this->setScenario($scenario);
 
             throw $e;
         }
 
+        // The version may have been saved before the transition failed.
         $this->setAttributes($previous, false);
+        $this->setOldAttributes($previousOld);
         $this->setScenario($scenario);
 
         return false;

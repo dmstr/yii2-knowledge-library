@@ -13,6 +13,7 @@ use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
 use m260928_100100_knowledge_library_schema;
 use m260928_203000_knowledge_library_versions;
+use m260928_223000_knowledge_library_history_details;
 use Yii;
 use yii\base\Application;
 use yii\console\Application as ConsoleApplication;
@@ -44,6 +45,8 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
 
     protected m260928_203000_knowledge_library_versions $versionsMigration;
 
+    protected m260928_223000_knowledge_library_history_details $historyDetailsMigration;
+
     /**
      * Temporary directory of the file storage `fs`, null until first use.
      */
@@ -62,6 +65,7 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         $this->mockApplication();
 
         DummyUserProvider::$currentReference = DummyUserProvider::DEFAULT_REFERENCE;
+        DummyUserProvider::$reviewerOptions = null;
         Yii::$container->setSingleton(UserProviderInterface::class, DummyUserProvider::class);
 
         $this->createMessageTables();
@@ -71,11 +75,16 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
 
         require_once dirname(__DIR__) . '/src/migrations/m260928_100100_knowledge_library_schema.php';
         require_once dirname(__DIR__) . '/src/migrations/m260928_203000_knowledge_library_versions.php';
+        require_once dirname(__DIR__) . '/src/migrations/m260928_223000_knowledge_library_history_details.php';
         $this->schemaMigration = new m260928_100100_knowledge_library_schema([
             'db' => Yii::$app->db,
             'compact' => true,
         ]);
         $this->versionsMigration = new m260928_203000_knowledge_library_versions([
+            'db' => Yii::$app->db,
+            'compact' => true,
+        ]);
+        $this->historyDetailsMigration = new m260928_223000_knowledge_library_history_details([
             'db' => Yii::$app->db,
             'compact' => true,
         ]);
@@ -245,7 +254,7 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
      */
     protected function runMigration(string $direction): void
     {
-        $migrations = [$this->schemaMigration, $this->versionsMigration];
+        $migrations = [$this->schemaMigration, $this->versionsMigration, $this->historyDetailsMigration];
         if ($direction === 'down') {
             $migrations = array_reverse($migrations);
         }
@@ -341,7 +350,9 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
     }
 
     /**
-     * Creates a draft of the item and publishes it via review.
+     * Creates a draft of the item and publishes it via review: submitted by
+     * the current user to `user-2`, published as `user-2`. The current user
+     * reference is restored afterwards.
      */
     protected function createPublishedVersion(Item $item, array $attributes = []): Version
     {
@@ -350,7 +361,15 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
             $version->submitForReview('user-2'),
             'Version not submitted: ' . json_encode($version->getErrors())
         );
-        $this->assertTrue($version->publish(), 'Version not published: ' . json_encode($version->getErrors()));
+
+        $current = DummyUserProvider::$currentReference;
+        DummyUserProvider::$currentReference = 'user-2';
+        try {
+            $published = $version->publish();
+        } finally {
+            DummyUserProvider::$currentReference = $current;
+        }
+        $this->assertTrue($published, 'Version not published: ' . json_encode($version->getErrors()));
 
         return $version;
     }

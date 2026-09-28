@@ -6,6 +6,7 @@ use dmstr\knowledgeLibrary\models\Type;
 use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\tests\TestCase;
 use m260928_203000_knowledge_library_versions;
+use m260928_223000_knowledge_library_history_details;
 use ReflectionMethod;
 use Yii;
 use yii\db\Connection;
@@ -198,6 +199,50 @@ class SchemaTest extends TestCase
         $textColumn = new ReflectionMethod($this->versionsMigration, 'textColumn');
 
         $this->assertSame('CHAR(64) NULL DEFAULT NULL', (string)$textColumn->invoke($this->versionsMigration, 'CHAR(64)'));
+    }
+
+    public function testHistoryDetailsMigrationAddsNullableColumn(): void
+    {
+        $column = $this->getTableSchema('history')->getColumn('details');
+
+        $this->assertNotNull($column, 'Column history.details is missing');
+        $this->assertTrue($column->allowNull);
+        $this->assertSame('text', $column->type);
+    }
+
+    public function testHistoryDetailsMigrationDownRemovesColumnAndUpRestoresIt(): void
+    {
+        $item = $this->createItem();
+        Yii::$app->db->createCommand()->insert('{{%knowledge_library_history}}', [
+            'id' => '00000000-0000-4000-8000-000000000001',
+            'item_id' => $item->id,
+            'action' => 'created',
+            'created_at' => '2026-09-28 12:00:00',
+        ])->execute();
+
+        $this->runSchemaMigration($this->historyDetailsMigration, 'down');
+
+        $this->assertNull($this->getTableSchema('history')->getColumn('details'));
+        $this->assertSame('1', (string)Yii::$app->db->createCommand(
+            'SELECT COUNT(*) FROM {{%knowledge_library_history}}'
+        )->queryScalar());
+
+        $this->runSchemaMigration($this->historyDetailsMigration, 'up');
+
+        $this->assertNotNull($this->getTableSchema('history')->getColumn('details'));
+    }
+
+    public function testHistoryDetailsMigrationDeclaresCharsetOnMysql(): void
+    {
+        $db = new Connection(['dsn' => 'mysql:host=localhost;dbname=test']);
+        $migration = new m260928_223000_knowledge_library_history_details(['db' => $db, 'compact' => true]);
+        $textColumn = new ReflectionMethod($migration, 'textColumn');
+
+        $this->assertSame(
+            'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL',
+            (string)$textColumn->invoke($migration, 'LONGTEXT')
+        );
+        $this->assertFalse($db->getIsActive());
     }
 
     /**

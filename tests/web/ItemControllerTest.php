@@ -411,8 +411,9 @@ class ItemControllerTest extends WebTestCase
         $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
         $noPeriod = $this->createType(['has_validity_period' => false, 'requires_review' => false]);
 
-        $archived = $this->createItem(['title' => 'S archived', 'type_id' => $type->id, 'is_archived' => true]);
+        $archived = $this->createItem(['title' => 'S archived', 'type_id' => $type->id]);
         $this->createPublishedVersion($archived, ['valid_from' => '2020-01-01']);
+        $this->assertTrue($archived->archive());
 
         $inReview = $this->createItem(['title' => 'S in review', 'type_id' => $type->id]);
         $this->assertTrue($this->createVersion($inReview, ['valid_from' => '2020-01-01'])->submitForReview('user-2'));

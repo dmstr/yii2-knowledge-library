@@ -4,6 +4,7 @@ namespace dmstr\knowledgeLibrary\models;
 
 use dmstr\knowledgeLibrary\models\query\ItemQuery;
 use dmstr\knowledgeLibrary\models\query\VersionQuery;
+use Throwable;
 use Yii;
 use yii\db\ActiveQuery;
 use yii\db\Query;
@@ -150,6 +151,50 @@ class Item extends ActiveRecord
     }
 
     /**
+     * Message for actions that are not possible on an archived item, e.g.
+     * creating or publishing a version.
+     */
+    public static function archivedMessage(): string
+    {
+        return Yii::t('knowledge-library', 'The knowledge object is archived.');
+    }
+
+    /**
+     * Archives the item and writes the history entry `archived`, in one
+     * transaction. Open drafts and reviews are kept; while archived no new
+     * versions can be created or published.
+     *
+     * @return bool whether the item was archived; see the errors otherwise
+     */
+    public function archive(?string $reason = null): bool
+    {
+        if ($this->is_archived) {
+            $this->addError('is_archived', static::archivedMessage());
+
+            return false;
+        }
+
+        return $this->setArchived(true, History::ACTION_ARCHIVED, $reason);
+    }
+
+    /**
+     * Restores an archived item and writes the history entry `restored`, in
+     * one transaction.
+     *
+     * @return bool whether the item was restored; see the errors otherwise
+     */
+    public function restore(?string $reason = null): bool
+    {
+        if (!$this->is_archived) {
+            $this->addError('is_archived', Yii::t('knowledge-library', 'The knowledge object is not archived.'));
+
+            return false;
+        }
+
+        return $this->setArchived(false, History::ACTION_RESTORED, $reason);
+    }
+
+    /**
      * Rejects a change of the type once the item has versions, as the
      * validity rules of the versions depend on it.
      */
@@ -279,6 +324,38 @@ class Item extends ActiveRecord
             ->orderBy(['number' => SORT_DESC])
             ->limit(1)
             ->one();
+    }
+
+    /**
+     * Stores the archive flag (with timestamp and user of the change) and
+     * writes the history entry in a transaction; restores the flag on
+     * failure.
+     */
+    private function setArchived(bool $archived, string $action, ?string $reason): bool
+    {
+        $previous = $this->is_archived;
+        $this->is_archived = $archived;
+
+        $transaction = static::getDb()->beginTransaction();
+        try {
+            if (!$this->save(false, ['is_archived', 'updated_at', 'updated_by'])) {
+                $transaction->rollBack();
+                $this->is_archived = $previous;
+
+                return false;
+            }
+
+            History::log($this, $action, null, $reason);
+            $transaction->commit();
+        } catch (Throwable $e) {
+            $transaction->rollBack();
+            $this->is_archived = $previous;
+            $this->setOldAttribute('is_archived', $previous);
+
+            throw $e;
+        }
+
+        return true;
     }
 
     /**

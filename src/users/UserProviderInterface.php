@@ -30,8 +30,10 @@ interface UserProviderInterface
     /**
      * Users that may be chosen as reviewer, as map `reference => display name`.
      *
-     * NOTE: implementations currently return all users; filtering by the
-     * reviewer permission is added once the review workflow exists.
+     * Implementations return the users allowed to review, e.g. users with the
+     * reviewer or admin role of the module. The current user is not excluded
+     * here: the review form and Version::submitForReview() reject choosing
+     * oneself (four-eyes principle).
      *
      * @return array<string, string>
      */

@@ -13,6 +13,14 @@ class DummyUserProvider implements UserProviderInterface
 
     public static ?string $currentReference = self::DEFAULT_REFERENCE;
 
+    /**
+     * Reviewer options as map `reference => display name`, null for the
+     * default options `user-1` to `user-3`; reset by TestCase::setUp().
+     *
+     * @var array<string, string>|null
+     */
+    public static ?array $reviewerOptions = null;
+
     public function getCurrentUserReference(): ?string
     {
         return static::$currentReference;
@@ -25,9 +33,10 @@ class DummyUserProvider implements UserProviderInterface
 
     public function getReviewerOptions(): array
     {
-        return [
+        return static::$reviewerOptions ?? [
             'user-1' => 'User user-1',
             'user-2' => 'User user-2',
+            'user-3' => 'User user-3',
         ];
     }
 }

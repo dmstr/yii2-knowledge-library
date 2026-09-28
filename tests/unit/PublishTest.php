@@ -54,16 +54,16 @@ class PublishTest extends TestCase
     {
         $version = $this->createVersion($this->createItem(), ['valid_from' => '2026-01-01']);
 
-        DummyUserProvider::$currentReference = 'author';
-        $this->assertTrue($version->submitForReview('reviewer'));
-        DummyUserProvider::$currentReference = 'reviewer';
+        DummyUserProvider::$currentReference = 'user-1';
+        $this->assertTrue($version->submitForReview('user-2'));
+        DummyUserProvider::$currentReference = 'user-2';
         $this->assertTrue($version->publish());
 
         $version = Version::findOne($version->id);
         $this->assertSame(Version::STATUS_PUBLISHED, $version->status);
-        $this->assertSame('reviewer', $version->reviewer_id);
-        $this->assertSame('author', $version->review_requested_by);
-        $this->assertSame('reviewer', $version->published_by);
+        $this->assertSame('user-2', $version->reviewer_id);
+        $this->assertSame('user-1', $version->review_requested_by);
+        $this->assertSame('user-2', $version->published_by);
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $version->review_requested_at);
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $version->published_at);
     }
@@ -128,7 +128,9 @@ class PublishTest extends TestCase
 
         // Invalid meanwhile, e.g. changed without saving.
         $version->content = '';
+        DummyUserProvider::$currentReference = 'user-2';
         $this->assertFalse($version->publish());
+        $this->assertTrue($version->hasErrors('content'));
 
         $this->assertNull(Version::findOne($predecessor->id)->valid_until);
         $this->assertSame(Version::STATUS_IN_REVIEW, Version::findOne($version->id)->status);
@@ -250,6 +252,7 @@ class PublishTest extends TestCase
 
         // The start moved before the predecessor after the submission.
         $version->valid_from = '2026-02-01';
+        DummyUserProvider::$currentReference = 'user-2';
         $this->assertFalse($version->publish());
 
         $this->assertSame(

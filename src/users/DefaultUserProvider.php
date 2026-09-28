@@ -2,9 +2,11 @@
 
 namespace dmstr\knowledgeLibrary\users;
 
+use dmstr\knowledgeLibrary\Module;
 use Yii;
 use yii\db\ActiveRecordInterface;
 use yii\db\BaseActiveRecord;
+use yii\rbac\ManagerInterface;
 use yii\web\IdentityInterface;
 use yii\web\User;
 
@@ -15,6 +17,12 @@ use yii\web\User;
  * The reference of a user is its `uuid` attribute if the identity has one,
  * otherwise its ID. The display name is the `username` attribute if present,
  * otherwise the reference. No specific user module is required.
+ *
+ * Reviewer options are the users with a direct assignment of the reviewer or
+ * the admin role of the module (see Module::ROLE_REVIEWER and
+ * Module::ROLE_ADMIN), all users if the application has no `authManager`.
+ * Users allowed through other means only (e.g. root users of the
+ * application) are not offered as reviewers.
  */
 class DefaultUserProvider implements UserProviderInterface
 {
@@ -67,6 +75,15 @@ class DefaultUserProvider implements UserProviderInterface
         }
 
         $query = $class::find();
+
+        $userIds = $this->getReviewerUserIds();
+        if ($userIds !== null) {
+            if ($userIds === []) {
+                return [];
+            }
+            $query->andWhere([$class::primaryKey()[0] => $userIds]);
+        }
+
         if ($this->hasColumn($class, static::DISPLAY_ATTRIBUTE)) {
             $query->orderBy([static::DISPLAY_ATTRIBUTE => SORT_ASC]);
         }
@@ -78,6 +95,33 @@ class DefaultUserProvider implements UserProviderInterface
         }
 
         return $options;
+    }
+
+    /**
+     * IDs of the users with a direct assignment of the reviewer or the admin
+     * role, null if the application has no `authManager`.
+     *
+     * @return string[]|null
+     */
+    protected function getReviewerUserIds(): ?array
+    {
+        if (Yii::$app === null || !Yii::$app->has('authManager')) {
+            return null;
+        }
+
+        $authManager = Yii::$app->get('authManager');
+        if (!$authManager instanceof ManagerInterface) {
+            return null;
+        }
+
+        $userIds = [];
+        foreach ([Module::ROLE_REVIEWER, Module::ROLE_ADMIN] as $role) {
+            foreach ($authManager->getUserIdsByRole($role) as $userId) {
+                $userIds[] = (string)$userId;
+            }
+        }
+
+        return array_values(array_unique($userIds));
     }
 
     /**
