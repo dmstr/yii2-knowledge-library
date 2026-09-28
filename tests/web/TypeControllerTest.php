@@ -140,6 +140,16 @@ class TypeControllerTest extends WebTestCase
         $this->assertStringContainsString('>Save</button>', $html);
     }
 
+    public function testCreateFormStartsWithValidityPeriodButWithoutApproval(): void
+    {
+        $this->loginAs(Module::ROLE_ADMIN);
+
+        $html = $this->assertPage($this->get('type/create'));
+
+        $this->assertMatchesRegularExpression('/<input type="checkbox" id="type-has_validity_period"[^>]* checked>/', $html);
+        $this->assertDoesNotMatchRegularExpression('/<input type="checkbox" id="type-requires_review"[^>]* checked>/', $html);
+    }
+
     public function testCreateWithEmptyNameShowsError(): void
     {
         $this->loginAs(Module::ROLE_ADMIN);
