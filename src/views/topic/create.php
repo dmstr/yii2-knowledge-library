@@ -13,9 +13,7 @@ $this->context->setBreadcrumbs([
     $this->title,
 ]);
 ?>
-<div class="knowledge-library-topic-create box box-default">
-    <div class="box-body">
-        <h1><?= Html::encode($this->title) ?></h1>
-        <?= $this->render('_form', ['model' => $model]) ?>
-    </div>
+<div class="knowledge-library-topic-create">
+    <h1><?= Html::encode($this->title) ?></h1>
+    <?= $this->render('_form', ['model' => $model]) ?>
 </div>

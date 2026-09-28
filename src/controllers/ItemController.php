@@ -4,9 +4,11 @@ namespace dmstr\knowledgeLibrary\controllers;
 
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\ItemState;
+use dmstr\knowledgeLibrary\models\Relation;
 use dmstr\knowledgeLibrary\models\search\ItemSearch;
 use dmstr\knowledgeLibrary\models\Topic;
 use dmstr\knowledgeLibrary\models\Type;
+use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\Module;
 use Yii;
 use yii\db\Exception as DbException;
@@ -23,6 +25,23 @@ use yii\web\Response;
  */
 class ItemController extends BaseController
 {
+    public const TAB_VERSIONS = 'versions';
+    public const TAB_CONTENT = 'content';
+    public const TAB_RELATIONS = 'relations';
+    public const TAB_SOURCE = 'source';
+    public const TAB_HISTORY = 'history';
+
+    /**
+     * Tabs of the detail page, in display order.
+     */
+    public const TABS = [
+        self::TAB_VERSIONS,
+        self::TAB_CONTENT,
+        self::TAB_RELATIONS,
+        self::TAB_SOURCE,
+        self::TAB_HISTORY,
+    ];
+
     /**
      * Lists the items with filters, sorting and the state of each item.
      */
@@ -61,6 +80,12 @@ class ItemController extends BaseController
             return $this->redirect(['view', 'id' => $model->id]);
         }
 
+        // Prefill of the title, e.g. from the duplicate hint of an attachment.
+        $title = $this->request->get('title');
+        if ($this->request->getIsGet() && is_string($title)) {
+            $model->title = trim($title);
+        }
+
         return $this->render('create', [
             'model' => $model,
             'typeOptions' => $this->typeOptions(),
@@ -68,14 +93,35 @@ class ItemController extends BaseController
     }
 
     /**
-     * Detail page with the header and the tabs of the item.
+     * Detail page with the header, the validity timeline and the tabs of the
+     * item.
      *
+     * `tab` selects the active tab (see TABS, default versions), `version`
+     * the number of the version shown in the tab content; without or with an
+     * unknown number the version valid today is shown, else the highest.
+     *
+     * @param string|null $version number of the version shown in the tab content
+     * @param string|null $tab active tab
      * @throws NotFoundHttpException
      */
-    public function actionView(string $id): string
+    public function actionView(string $id, $version = null, $tab = null): string
     {
         $model = $this->findModel($id);
         $uploadedBy = $model->source_uploaded_by;
+
+        /** @var Version[] $versions */
+        $versions = $model->getVersions()
+            ->andWhere(['not', ['status' => Version::STATUS_DRAFT]])
+            ->orderBy(['number' => SORT_DESC])
+            ->all();
+        foreach ($versions as $entry) {
+            $entry->populateRelation('item', $model);
+        }
+        $draft = $model->getVersions()->andWhere(['status' => Version::STATUS_DRAFT])->one();
+
+        $outgoing = $model->getOutgoingRelations()->with('targetItem')->all();
+        $incoming = $model->getIncomingRelations()->with('sourceItem')->all();
+        $excluded = array_merge([$model->id], array_map(static fn (Relation $relation) => $relation->target_item_id, $outgoing));
 
         return $this->render('view', [
             'model' => $model,
@@ -83,6 +129,20 @@ class ItemController extends BaseController
             'uploadedByName' => $uploadedBy === null || $uploadedBy === ''
                 ? null
                 : ($this->module->getUserProvider()->getDisplayName($uploadedBy) ?? $uploadedBy),
+            'activeTab' => is_string($tab) && in_array($tab, self::TABS, true) ? $tab : self::TAB_VERSIONS,
+            'versions' => $versions,
+            'draft' => $draft,
+            'selectedVersion' => $this->selectVersion($model, $versions, $version),
+            'outgoing' => $outgoing,
+            'incoming' => $incoming,
+            'targetOptions' => ArrayHelper::map(
+                Item::find()
+                    ->andWhere(['not', [Item::tableName() . '.[[id]]' => $excluded]])
+                    ->orderBy(['title' => SORT_ASC])
+                    ->all(),
+                'id',
+                'title'
+            ),
         ]);
     }
 
@@ -172,6 +232,35 @@ class ItemController extends BaseController
         ]));
 
         return $this->redirect(['index']);
+    }
+
+    /**
+     * Version shown in the tab content: the one with the given number, else
+     * the version valid today, else the highest.
+     *
+     * @param Version[] $versions versions without drafts, highest number first
+     * @param mixed $number number from the query
+     */
+    private function selectVersion(Item $item, array $versions, $number): ?Version
+    {
+        if (is_string($number) && ctype_digit($number)) {
+            foreach ($versions as $version) {
+                if ((int)$version->number === (int)$number) {
+                    return $version;
+                }
+            }
+        }
+
+        $valid = $item->getValidVersion();
+        if ($valid !== null) {
+            foreach ($versions as $version) {
+                if ($version->id === $valid->id) {
+                    return $version;
+                }
+            }
+        }
+
+        return $versions[0] ?? null;
     }
 
     /**

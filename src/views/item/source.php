@@ -18,29 +18,27 @@ $this->context->setBreadcrumbs([
     $this->title,
 ]);
 ?>
-<div class="knowledge-library-item-source box box-default">
-    <div class="box-body">
-        <h1><?= Html::encode($this->title) ?></h1>
+<div class="knowledge-library-item-source">
+    <h1><?= Html::encode($this->title) ?></h1>
 
-        <?php $form = ActiveForm::begin(['id' => 'knowledge-library-item-source-form']) ?>
+    <?php $form = ActiveForm::begin(['id' => 'knowledge-library-item-source-form']) ?>
 
-        <?= $form->field($model, 'source_name')->textInput(['maxlength' => true, 'autofocus' => true]) ?>
+    <?= $form->field($model, 'source_name')->textInput(['maxlength' => true, 'autofocus' => true]) ?>
 
-        <?= $form->field($model, 'source_reference')->textInput(['maxlength' => true]) ?>
+    <?= $form->field($model, 'source_reference')->textInput(['maxlength' => true]) ?>
 
-        <?= $form->field($model, 'source_url')->textInput(['maxlength' => true, 'type' => 'url']) ?>
+    <?= $form->field($model, 'source_url')->textInput(['maxlength' => true, 'type' => 'url']) ?>
 
-        <?= $form->field($model, 'source_import_mode')->radioList(Item::sourceImportModes()) ?>
+    <?= $form->field($model, 'source_import_mode')->radioList(Item::sourceImportModes()) ?>
 
-        <div class="form-group">
-            <?= Html::submitButton(Html::encode(Yii::t('knowledge-library', 'Save')), ['class' => 'btn btn-success']) ?>
-            <?= Html::a(
-                Html::encode(Yii::t('knowledge-library', 'Cancel')),
-                ['view', 'id' => $model->id],
-                ['class' => 'btn btn-default']
-            ) ?>
-        </div>
-
-        <?php ActiveForm::end() ?>
+    <div class="form-group">
+        <?= Html::submitButton(Html::encode(Yii::t('knowledge-library', 'Save')), ['class' => 'btn btn-success']) ?>
+        <?= Html::a(
+            Html::encode(Yii::t('knowledge-library', 'Cancel')),
+            ['view', 'id' => $model->id],
+            ['class' => 'btn btn-default']
+        ) ?>
     </div>
+
+    <?php ActiveForm::end() ?>
 </div>

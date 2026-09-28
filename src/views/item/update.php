@@ -14,14 +14,12 @@ $this->context->setBreadcrumbs([
     $this->title,
 ]);
 ?>
-<div class="knowledge-library-item-update box box-default">
-    <div class="box-body">
-        <h1><?= Html::encode($this->title) ?></h1>
-        <?= $this->render('_form', [
-            'model' => $model,
-            'typeOptions' => $typeOptions,
-            'submitLabel' => Yii::t('knowledge-library', 'Save'),
-            'cancelUrl' => ['view', 'id' => $model->id],
-        ]) ?>
-    </div>
+<div class="knowledge-library-item-update">
+    <h1><?= Html::encode($this->title) ?></h1>
+    <?= $this->render('_form', [
+        'model' => $model,
+        'typeOptions' => $typeOptions,
+        'submitLabel' => Yii::t('knowledge-library', 'Save'),
+        'cancelUrl' => ['view', 'id' => $model->id],
+    ]) ?>
 </div>

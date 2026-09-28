@@ -55,122 +55,120 @@ JS, View::POS_READY, 'knowledge-library-item-row');
 
 $sort = $dataProvider->getSort();
 ?>
-<div class="knowledge-library-item-index box box-default">
-    <div class="box-body">
-        <h1>
-            <?= Html::encode($this->title) ?>
-            <small><?= Html::encode(Yii::t('knowledge-library', 'List')) ?></small>
-        </h1>
-        <?= Html::a(
-            '<i class="fa fa-plus"></i> ' . Html::encode(Yii::t('knowledge-library', 'Create knowledge object')),
-            ['create'],
-            ['class' => 'btn btn-success']
-        ) ?>
-        <hr>
+<div class="knowledge-library-item-index">
+    <h1>
+        <?= Html::encode($this->title) ?>
+        <small><?= Html::encode(Yii::t('knowledge-library', 'List')) ?></small>
+    </h1>
+    <?= Html::a(
+        '<i class="fa fa-plus"></i> ' . Html::encode(Yii::t('knowledge-library', 'Create knowledge object')),
+        ['create'],
+        ['class' => 'btn btn-success']
+    ) ?>
+    <hr>
 
-        <?php if ($isEmpty): ?>
-            <div class="callout callout-info">
-                <?= Html::encode(Yii::t(
-                    'knowledge-library',
-                    'No knowledge objects yet. Create the first one with "Create knowledge object".'
-                )) ?>
-            </div>
-        <?php else: ?>
-            <?= GridView::widget([
-                'id' => 'knowledge-library-item-grid',
-                'dataProvider' => $dataProvider,
-                'filterModel' => $searchModel,
-                'tableOptions' => ['class' => 'table table-bordered'],
-                'emptyText' => Yii::t('knowledge-library', 'No entries for these filters.'),
-                'emptyTextOptions' => ['class' => 'text-muted'],
-                'rowOptions' => static fn (Item $model) => [
-                    'class' => 'knowledge-library-item-row',
-                    'data-href' => Url::to(['view', 'id' => $model->id]),
+    <?php if ($isEmpty): ?>
+        <div class="callout callout-info">
+            <?= Html::encode(Yii::t(
+                'knowledge-library',
+                'No knowledge objects yet. Create the first one with "Create knowledge object".'
+            )) ?>
+        </div>
+    <?php else: ?>
+        <?= GridView::widget([
+            'id' => 'knowledge-library-item-grid',
+            'dataProvider' => $dataProvider,
+            'filterModel' => $searchModel,
+            'tableOptions' => ['class' => 'table table-bordered'],
+            'emptyText' => Yii::t('knowledge-library', 'No entries for these filters.'),
+            'emptyTextOptions' => ['class' => 'text-muted'],
+            'rowOptions' => static fn (Item $model) => [
+                'class' => 'knowledge-library-item-row',
+                'data-href' => Url::to(['view', 'id' => $model->id]),
+            ],
+            'columns' => [
+                [
+                    'attribute' => 'title',
+                    'label' => Yii::t('knowledge-library', 'Title'),
+                    'format' => 'raw',
+                    'value' => static fn (Item $model) => Html::a(
+                        Html::encode($model->title),
+                        ['view', 'id' => $model->id],
+                        $model->is_archived ? [
+                            'class' => 'knowledge-library-archived',
+                            'style' => 'color: #999; text-decoration: line-through',
+                        ] : []
+                    ),
                 ],
-                'columns' => [
-                    [
-                        'attribute' => 'title',
-                        'label' => Yii::t('knowledge-library', 'Title'),
-                        'format' => 'raw',
-                        'value' => static fn (Item $model) => Html::a(
-                            Html::encode($model->title),
-                            ['view', 'id' => $model->id],
-                            $model->is_archived ? [
-                                'class' => 'knowledge-library-archived',
-                                'style' => 'color: #999; text-decoration: line-through',
-                            ] : []
-                        ),
-                    ],
-                    [
-                        'attribute' => 'type_id',
-                        'label' => Yii::t('knowledge-library', 'Type'),
-                        'filter' => $typeOptions,
-                        'headerOptions' => ['style' => 'width: 170px'],
-                        'value' => static fn (Item $model) => $model->type->name ?? null,
-                    ],
-                    [
+                [
+                    'attribute' => 'type_id',
+                    'label' => Yii::t('knowledge-library', 'Type'),
+                    'filter' => $typeOptions,
+                    'headerOptions' => ['style' => 'width: 170px'],
+                    'value' => static fn (Item $model) => $model->type->name ?? null,
+                ],
+                [
+                    'attribute' => 'topicIds',
+                    'label' => Yii::t('knowledge-library', 'Topics'),
+                    'enableSorting' => false,
+                    'headerOptions' => ['style' => 'width: 300px'],
+                    'filter' => Select2::widget([
+                        'model' => $searchModel,
                         'attribute' => 'topicIds',
-                        'label' => Yii::t('knowledge-library', 'Topics'),
-                        'enableSorting' => false,
-                        'headerOptions' => ['style' => 'width: 300px'],
-                        'filter' => Select2::widget([
-                            'model' => $searchModel,
-                            'attribute' => 'topicIds',
-                            'data' => $topicOptions,
-                            'theme' => Select2::THEME_BOOTSTRAP,
-                            'options' => [
-                                'id' => 'knowledge-library-item-topic-filter',
-                                'multiple' => true,
-                                'placeholder' => '',
-                            ],
-                            'pluginOptions' => [
-                                'allowClear' => true,
-                            ],
-                        ]),
-                        'value' => static function (Item $model) {
-                            $names = array_map(static fn ($topic) => $topic->name, $model->topics);
-                            sort($names);
+                        'data' => $topicOptions,
+                        'theme' => Select2::THEME_BOOTSTRAP,
+                        'options' => [
+                            'id' => 'knowledge-library-item-topic-filter',
+                            'multiple' => true,
+                            'placeholder' => '',
+                        ],
+                        'pluginOptions' => [
+                            'allowClear' => true,
+                        ],
+                    ]),
+                    'value' => static function (Item $model) {
+                        $names = array_map(static fn ($topic) => $topic->name, $model->topics);
+                        sort($names);
 
-                            return $names === [] ? '–' : implode(', ', $names);
-                        },
-                    ],
-                    [
-                        'label' => Yii::t('knowledge-library', 'In Force'),
-                        'header' => Html::encode(Yii::t('knowledge-library', 'In Force'))
-                            . Html::tag('small', $sort->link('lastChange'), [
-                                'class' => 'knowledge-library-last-change',
-                            ]),
-                        'headerOptions' => ['style' => 'width: 220px'],
-                        'filter' => Html::activeDropDownList(
-                            $searchModel,
-                            'archived',
-                            ItemSearch::archivedOptions(),
-                            ['class' => 'form-control', 'id' => 'knowledge-library-item-archived-filter']
-                        ),
-                        'format' => 'raw',
-                        'value' => static function (Item $model) use ($states, $stateStyles) {
-                            $state = $states[(string)$model->id] ?? null;
-                            if ($state === null) {
-                                return '';
-                            }
-
-                            $since = $state->getSinceLabel();
-                            if ($state->getState() === ItemState::VALID) {
-                                return Html::tag('span', Html::encode($state->getLabel()))
-                                    . ($since === null ? '' : ' ' . Html::tag('span', Html::encode($since), [
-                                        'class' => 'knowledge-library-since',
-                                        'style' => 'color: #777',
-                                    ]));
-                            }
-
-                            return Html::tag('span', Html::encode($state->getLabel()), [
-                                'class' => 'knowledge-library-state knowledge-library-state-' . $state->getState(),
-                                'style' => $stateStyles[$state->getState()] ?? null,
-                            ]);
-                        },
-                    ],
+                        return $names === [] ? '–' : implode(', ', $names);
+                    },
                 ],
-            ]) ?>
-        <?php endif ?>
-    </div>
+                [
+                    'label' => Yii::t('knowledge-library', 'In Force'),
+                    'header' => Html::encode(Yii::t('knowledge-library', 'In Force'))
+                        . Html::tag('small', $sort->link('lastChange'), [
+                            'class' => 'knowledge-library-last-change',
+                        ]),
+                    'headerOptions' => ['style' => 'width: 220px'],
+                    'filter' => Html::activeDropDownList(
+                        $searchModel,
+                        'archived',
+                        ItemSearch::archivedOptions(),
+                        ['class' => 'form-control', 'id' => 'knowledge-library-item-archived-filter']
+                    ),
+                    'format' => 'raw',
+                    'value' => static function (Item $model) use ($states, $stateStyles) {
+                        $state = $states[(string)$model->id] ?? null;
+                        if ($state === null) {
+                            return '';
+                        }
+
+                        $since = $state->getSinceLabel();
+                        if ($state->getState() === ItemState::VALID) {
+                            return Html::tag('span', Html::encode($state->getLabel()))
+                                . ($since === null ? '' : ' ' . Html::tag('span', Html::encode($since), [
+                                    'class' => 'knowledge-library-since',
+                                    'style' => 'color: #777',
+                                ]));
+                        }
+
+                        return Html::tag('span', Html::encode($state->getLabel()), [
+                            'class' => 'knowledge-library-state knowledge-library-state-' . $state->getState(),
+                            'style' => $stateStyles[$state->getState()] ?? null,
+                        ]);
+                    },
+                ],
+            ],
+        ]) ?>
+    <?php endif ?>
 </div>

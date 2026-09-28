@@ -2,6 +2,7 @@
 
 namespace dmstr\knowledgeLibrary\tests\web;
 
+use dmstr\knowledgeLibrary\models\File;
 use dmstr\knowledgeLibrary\models\History;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Relation;
@@ -83,7 +84,11 @@ class ItemControllerTest extends WebTestCase
 
             $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
             $this->assertStringNotContainsString('knowledge-library-item-delete', $html, $role);
-            $this->assertStringNotContainsString('data-method="post"', $html, $role);
+            $this->assertStringNotContainsString(
+                Html::encode(Url::to(['/knowledge-library/item/delete', 'id' => $item->id])),
+                $html,
+                $role
+            );
         }
         $this->assertNotNull(Item::findOne($item->id));
     }
@@ -711,10 +716,11 @@ class ItemControllerTest extends WebTestCase
         foreach (['Versions', 'Content', 'Relations', 'Source &amp; origin', 'History'] as $label) {
             $this->assertMatchesRegularExpression('#data-toggle="tab"[^>]*>' . preg_quote($label, '#') . '</a>#', $html);
         }
-        $this->assertMatchesRegularExpression('#<li role="presentation" class="active">\s*<a href="\#knowledge-library-tab-source"#', $html);
-        $this->assertStringContainsString('class="tab-pane active" id="knowledge-library-tab-source"', $html);
-        $this->assertSame(4, substr_count($html, 'knowledge-library-placeholder'));
-        $this->assertStringContainsString('Versions will be available in a later release.', $html);
+        // Versions is the default tab.
+        $this->assertMatchesRegularExpression('#<li role="presentation" class="active">\s*<a href="\#knowledge-library-tab-versions"#', $html);
+        $this->assertStringContainsString('class="tab-pane active" id="knowledge-library-tab-versions"', $html);
+        $this->assertSame(1, substr_count($html, 'class="tab-pane active"'));
+        $this->assertSame(1, substr_count($html, 'knowledge-library-placeholder'));
         $this->assertStringContainsString('The change history will be available in a later release.', $html);
     }
 
@@ -839,6 +845,264 @@ class ItemControllerTest extends WebTestCase
 
         $this->post('item/delete', [], ['id' => $item->id]);
         $this->assertSame('Wissensobjekt „Waldgesetz“ gelöscht.', $this->getFlash('success'));
+    }
+
+    public function testCreatePrefillsTitleFromQuery(): void
+    {
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/create', ['title' => ' FAQ "home" ']));
+        $this->assertStringContainsString('value="FAQ &quot;home&quot;"', $html);
+
+        $html = $this->assertPage($this->get('item/create', ['title' => ['x']]));
+        $this->assertMatchesRegularExpression('#name="Item\[title]" value=""|name="Item\[title]"(?! value)#', $html);
+    }
+
+    public function testDetailHeaderWithoutVersions(): void
+    {
+        $topicB = $this->createTopic(['name' => 'Water']);
+        $topicA = $this->createTopic(['name' => 'Forest']);
+        $item = $this->createItem(['topicIds' => [$topicB->id, $topicA->id], 'source_name' => 'Gazette <1>']);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertMatchesRegularExpression(
+            '#<a class="btn knowledge-library-item-new-version" href="'
+            . preg_quote(Html::encode(Url::to(['/knowledge-library/version/create', 'itemId' => $item->id])), '#')
+            . '" style="[^"]*background: \#00a65a[^"]*" data-method="post"><i class="fa fa-plus"></i> Create first version</a>#',
+            $html
+        );
+        $this->assertStringNotContainsString('knowledge-library-item-continue-draft', $html);
+        $this->assertMatchesRegularExpression('#knowledge-library-item-topics">\s*Topics\s*<b style="color: \#333">Forest, Water</b>#', $html);
+        $this->assertMatchesRegularExpression('#knowledge-library-item-source-name">\s*Source\s*<b style="color: \#333">Gazette &lt;1&gt;</b>#', $html);
+        $this->assertStringContainsString(
+            'This knowledge object has no version yet. Use &quot;Create first version&quot; to enter the content.',
+            $html
+        );
+        $this->assertStringContainsString('#00c0ef', $html);
+        $this->assertStringNotContainsString('kl-validity-timeline', $html);
+        $this->assertStringContainsString('No versions yet.', $html);
+        $this->assertStringNotContainsString('knowledge-library-item-versions', $html);
+
+        $other = $this->createItem();
+        $html = $this->assertPage($this->get('item/view', ['id' => $other->id]));
+        $this->assertMatchesRegularExpression('#knowledge-library-item-topics">\s*Topics\s*<b style="color: \#333">none</b>#', $html);
+    }
+
+    public function testDetailHeaderWithVersionsAndDraft(): void
+    {
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => false]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+        $this->assertMatchesRegularExpression('#knowledge-library-item-new-version"[^>]*><i class="fa fa-plus"></i> New version</a>#', $html);
+        $this->assertStringContainsString('knowledge-library-item-validity', $html);
+        $this->assertStringContainsString('kl-validity-timeline', $html);
+        $this->assertStringNotContainsString('knowledge-library-item-no-versions', $html);
+
+        $draft = Version::createDraft($item);
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+        $this->assertStringNotContainsString('knowledge-library-item-new-version', $html);
+        $this->assertMatchesRegularExpression(
+            '#<a class="btn knowledge-library-item-continue-draft" href="'
+            . preg_quote(Html::encode(Url::to(['/knowledge-library/version/update', 'id' => $draft->id, 'step' => 1])), '#')
+            . '" style="[^"]*background: \#f39c12[^"]*"><i class="fa fa-pencil"></i> Continue draft</a>#',
+            $html
+        );
+        $this->assertStringContainsString('knowledge-library-item-discard-draft', $html);
+        // Drafts are not listed.
+        $this->assertSame(1, substr_count($html, 'knowledge-library-version-row'));
+    }
+
+    public function testDetailHidesCreateButtonWhileAVersionIsInReview(): void
+    {
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $this->assertTrue($this->createVersion($item, ['valid_from' => '2099-01-01'])->submitForReview('user-2'));
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertStringNotContainsString('knowledge-library-item-new-version', $html);
+        $this->assertStringNotContainsString('knowledge-library-item-no-versions', $html);
+        // A version in review is not part of the timeline.
+        $this->assertStringNotContainsString('kl-validity-timeline', $html);
+        $this->assertMatchesRegularExpression('#knowledge-library-version-state-in_review" style="[^"]*background: \#fff; color: \#c87f0a; border-color: \#f39c12">In Review</span>#', $html);
+    }
+
+    public function testVersionsTabShowsStatesAndTimelineExcludesDraftsAndReviews(): void
+    {
+        $formatter = Yii::$app->formatter;
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $this->createPublishedVersion($item, ['valid_from' => '2021-01-01']);
+        $this->createPublishedVersion($item, ['valid_from' => '2099-01-01']);
+        $withdrawn = $this->createPublishedVersion($item, ['valid_from' => '2099-03-01']);
+        $withdrawn->updateAttributes(['status' => Version::STATUS_WITHDRAWN]);
+        $this->assertTrue($this->createVersion($item, ['valid_from' => '2099-06-01'])->submitForReview('user-2'));
+        $this->createVersion($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertSame(5, substr_count($html, 'class="knowledge-library-version-row"'));
+        preg_match_all('#<tr class="knowledge-library-version-row" data-number="(\d+)"#', $html, $rows);
+        $this->assertSame(['5', '4', '3', '2', '1'], $rows[1]);
+        $expected = [
+            1 => ['historical', 'Historical', '#d2d6de'],
+            2 => ['in_force', 'In Force', '#00a65a'],
+            3 => ['upcoming', 'Upcoming', '#00c0ef'],
+            4 => ['withdrawn', 'Withdrawn', '#dd4b39'],
+            5 => ['in_review', 'In Review', '#fff'],
+        ];
+        foreach ($expected as $number => [$state, $label, $background]) {
+            $this->assertMatchesRegularExpression(
+                '#data-number="' . $number . '">.*?knowledge-library-version-state-' . $state
+                . '" style="[^"]*background: ' . preg_quote($background, '#') . '[^"]*">' . $label . '</span>#s',
+                $html,
+                "version $number"
+            );
+            $this->assertStringContainsString(
+                'href="' . Html::encode(Url::to(['/knowledge-library/item/view', 'id' => $item->id, 'version' => $number, 'tab' => 'content'])) . '"',
+                $html
+            );
+        }
+        $this->assertMatchesRegularExpression(
+            '#data-number="4">\s*<td>4</td>\s*<td style="white-space: nowrap; text-decoration: line-through">#',
+            $html
+        );
+        $this->assertStringContainsString(
+            Html::encode($formatter->asDate('2020-01-01') . ' – ' . $formatter->asDate('2020-12-31')),
+            $html
+        );
+        $this->assertStringContainsString(Html::encode($formatter->asDate('2099-06-01') . ' – open-ended'), $html);
+
+        // Timeline: published and withdrawn versions only.
+        preg_match_all('#class="kl-validity-timeline-bar[^"]*"[^>]*data-number="(\d+)"#', $html, $bars);
+        sort($bars[1]);
+        $this->assertSame(['1', '2', '3', '4'], $bars[1]);
+    }
+
+    public function testContentTabRendersEncodedMarkdown(): void
+    {
+        $item = $this->createItem();
+        $this->createPublishedVersion($item, [
+            'valid_from' => '2020-01-01',
+            'content' => "Intro **bold**\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>",
+        ]);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'content']));
+
+        $this->assertStringContainsString('class="tab-pane active" id="knowledge-library-tab-content"', $html);
+        $this->assertStringContainsString('<strong>bold</strong>', $html);
+        $this->assertStringNotContainsString('<script>alert(1)', $html);
+        $this->assertStringNotContainsString('<img src=x', $html);
+        $this->assertStringNotContainsString('<img src="x"', $html);
+        $this->assertStringContainsString('&lt;script&gt;alert(1)&lt;/script&gt;', $html);
+        $this->assertStringContainsString('&lt;img src=x onerror=alert(2)&gt;', $html);
+    }
+
+    public function testContentTabSelectsVersion(): void
+    {
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $this->createPublishedVersion($item, ['valid_from' => '2020-01-01', 'content' => 'Text one']);
+        $this->createPublishedVersion($item, ['valid_from' => '2021-01-01', 'content' => 'Text two']);
+        $this->createPublishedVersion($item, ['valid_from' => '2099-01-01', 'content' => 'Text three']);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $cases = [[null, 2], ['1', 1], ['3', 3], ['999', 2], ['abc', 2], ['', 2], ['-1', 2]];
+        foreach ($cases as [$requested, $selected]) {
+            $params = ['id' => $item->id, 'tab' => 'content'];
+            if ($requested !== null) {
+                $params['version'] = $requested;
+            }
+            $html = $this->assertPage($this->get('item/view', $params));
+            $this->assertStringContainsString('<option value="' . $selected . '" selected>', $html, "version $requested");
+            $this->assertStringContainsString('Text ' . ['1' => 'one', '2' => 'two', '3' => 'three'][$selected], $html);
+        }
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'content', 'version' => ['x']]));
+        $this->assertStringContainsString('<option value="2" selected>', $html);
+        foreach (['Version 3, Upcoming', 'Version 2, In Force', 'Version 1, Historical'] as $label) {
+            $this->assertStringContainsString('>' . $label . '</option>', $html);
+        }
+
+        // Without a version valid today the highest is shown.
+        $future = $this->createItem(['type_id' => $type->id]);
+        $this->createPublishedVersion($future, ['valid_from' => '2098-01-01', 'content' => 'Future one']);
+        $this->createPublishedVersion($future, ['valid_from' => '2099-01-01', 'content' => 'Future two']);
+        $html = $this->assertPage($this->get('item/view', ['id' => $future->id, 'tab' => 'content']));
+        $this->assertStringContainsString('<option value="2" selected>', $html);
+    }
+
+    public function testContentTabListsFilesWithDownloadLinks(): void
+    {
+        $item = $this->createItem();
+        $version = $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $main = $this->createFile($version, ['kind' => 'main', 'name' => 'law <1>.pdf', 'size' => 2048]);
+        $attachment = $this->createFile($version, ['title' => 'Form <A>', 'name' => 'form.pdf', 'size' => 1024]);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'content']));
+
+        foreach ([[$main, 'law &lt;1&gt;.pdf'], [$attachment, 'Form &lt;A&gt;']] as [$file, $label]) {
+            $this->assertStringContainsString(
+                '<a href="' . Html::encode(Url::to(['/knowledge-library/file/download', 'id' => $file->id])) . '">' . $label . '</a>',
+                $html
+            );
+        }
+        $this->assertMatchesRegularExpression('#knowledge-library-content-attachments.*?form\.pdf</td>#s', $html);
+        $this->assertStringContainsString(Html::encode(Yii::$app->formatter->asShortSize(2048, 1)), $html);
+        $this->assertStringNotContainsString('No main documents.', $html);
+    }
+
+    public function testContentTabEmptyHints(): void
+    {
+        $type = $this->createType(['has_validity_period' => false, 'requires_review' => false]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $version = $this->createVersion($item, ['content' => '']);
+        $this->createFile($version, ['kind' => 'main']);
+        $this->assertTrue($version->publish(), json_encode($version->getErrors()));
+        File::deleteAll(['version_id' => $version->id]);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'content']));
+
+        $this->assertStringContainsString('No text available.', $html);
+        $this->assertStringContainsString('No main documents.', $html);
+        $this->assertStringContainsString('No attachments.', $html);
+    }
+
+    public function testTabParamSelectsActiveTab(): void
+    {
+        $item = $this->createItem();
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        foreach (['relations' => 'relations', 'source' => 'source', 'history' => 'history', 'bogus' => 'versions'] as $tab => $expected) {
+            $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => $tab]));
+            $this->assertStringContainsString('class="tab-pane active" id="knowledge-library-tab-' . $expected . '"', $html, $tab);
+            $this->assertSame(1, substr_count($html, 'class="tab-pane active"'), $tab);
+        }
+    }
+
+    public function testDetailTabsAreTranslated(): void
+    {
+        Yii::$app->language = 'de';
+        $item = $this->createItem();
+        $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        foreach (['Neue Version', 'Gültigkeit', 'Nr.', 'In Kraft', 'Ansehen', 'Themen', 'keine', 'Ausgehend', 'Eingehend', 'Keine Hauptdokumente.', 'Keine Anhänge.', 'Version 1, In Kraft'] as $text) {
+            $this->assertStringContainsString(Html::encode($text), $html);
+        }
     }
 
     private function createRelation(Item $source, Item $target): Relation
