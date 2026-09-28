@@ -45,19 +45,11 @@ class FileController extends BaseController
             throw new NotFoundHttpException(Yii::t('knowledge-library', 'The requested file does not exist.'));
         }
 
-        $stream = (new FileService($this->module))->readStream($file);
-        if ($stream === null) {
+        $response = (new FileService($this->module))->send($file, $this->response);
+        if ($response === null) {
             throw new NotFoundHttpException(Yii::t('knowledge-library', 'The requested file does not exist.'));
         }
 
-        $options = [
-            'mimeType' => $file->mime_type ?: 'application/octet-stream',
-            'inline' => false,
-        ];
-        if ($file->size !== null) {
-            $options['fileSize'] = (int)$file->size;
-        }
-
-        return $this->response->sendStreamAsFile($stream, $file->name, $options);
+        return $response;
     }
 }

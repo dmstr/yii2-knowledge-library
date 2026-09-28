@@ -14,9 +14,9 @@
  */
 
 use dmstr\knowledgeLibrary\controllers\VersionController;
+use dmstr\knowledgeLibrary\helpers\MarkdownHelper;
 use dmstr\knowledgeLibrary\models\File;
 use yii\helpers\Html;
-use yii\helpers\Markdown;
 use yii\helpers\Url;
 
 $this->title = Yii::t('knowledge-library', 'Review version {number}', ['number' => (int)$model->number]);
@@ -97,7 +97,7 @@ foreach ($model->attachments as $file) {
                 <div class="text-muted knowledge-library-review-no-text"><?= Html::encode(Yii::t('knowledge-library', 'No text available.')) ?></div>
             <?php else: ?>
                 <div class="knowledge-library-review-text" style="border: 1px solid #e3e6ea; background: #f9fafb; border-radius: 3px; padding: 10px 14px; line-height: 1.6">
-                    <?= Markdown::process(Html::encode($model->content), 'gfm') ?>
+                    <?= MarkdownHelper::render($model->content) ?>
                 </div>
             <?php endif ?>
         </div>

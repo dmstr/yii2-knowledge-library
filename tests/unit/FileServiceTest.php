@@ -14,6 +14,8 @@ use League\Flysystem\Local\LocalFilesystemAdapter;
 use League\Flysystem\UnableToDeleteFile;
 use Yii;
 use yii\log\Logger;
+use yii\web\Request;
+use yii\web\Response;
 use yii\web\UploadedFile;
 
 class FileServiceTest extends TestCase
@@ -365,6 +367,52 @@ class FileServiceTest extends TestCase
 
         unlink($this->getStoragePath($file->path));
         $this->assertNull($service->readStream($file));
+    }
+
+    public function testSendDeliversTheStoredFileAsAttachment(): void
+    {
+        // Range handling of Response::sendStreamAsFile() reads the request headers.
+        Yii::$app->set('request', ['class' => Request::class, 'cookieValidationKey' => 'test']);
+        $service = $this->service();
+        $file = $service->store($this->createVersion($this->createItem()), $this->upload('Report.txt', 'Content'), File::KIND_ATTACHMENT);
+        $response = new Response();
+
+        $this->assertSame($response, $service->send($file, $response));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertStringStartsWith('attachment;', (string)$response->getHeaders()->get('Content-Disposition'));
+        $this->assertStringContainsString('Report.txt', (string)$response->getHeaders()->get('Content-Disposition'));
+        $this->assertSame('text/plain', $response->getHeaders()->get('Content-Type'));
+        $this->assertSame('7', (string)$response->getHeaders()->get('Content-Length'));
+        [$stream] = $response->stream;
+        $this->assertSame('Content', stream_get_contents($stream));
+        fclose($stream);
+    }
+
+    public function testSendFallsBackToOctetStream(): void
+    {
+        Yii::$app->set('request', ['class' => Request::class, 'cookieValidationKey' => 'test']);
+        $service = $this->service();
+        $file = $service->store($this->createVersion($this->createItem()), $this->upload('a.txt', 'Content'), File::KIND_ATTACHMENT);
+        $file->mime_type = null;
+        $response = new Response();
+
+        $service->send($file, $response);
+
+        $this->assertSame('application/octet-stream', $response->getHeaders()->get('Content-Type'));
+        fclose($response->stream[0]);
+    }
+
+    public function testSendReturnsNullForMissingStoredFile(): void
+    {
+        $service = $this->service();
+        $file = $service->store($this->createVersion($this->createItem()), $this->upload('a.txt', 'Content'), File::KIND_ATTACHMENT);
+        unlink($this->getStoragePath($file->path));
+        $response = new Response();
+
+        $this->assertNull($service->send($file, $response));
+        $this->assertNull($response->stream);
+        $this->assertFalse($response->getHeaders()->has('Content-Disposition'));
     }
 
     public function testStoreRequiresSavedVersion(): void

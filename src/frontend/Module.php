@@ -2,7 +2,10 @@
 
 namespace dmstr\knowledgeLibrary\frontend;
 
+use dmstr\knowledgeLibrary\Module as BackendModule;
 use dmstr\web\traits\AccessBehaviorTrait;
+use Yii;
+use yii\base\InvalidConfigException;
 
 /**
  * Frontend module rendering the currently valid content of knowledge items.
@@ -20,8 +23,37 @@ class Module extends \yii\base\Module
      */
     public ?string $backendModuleId = 'knowledge-library';
 
+    /**
+     * The list of the valid knowledge items.
+     */
+    public $defaultRoute = 'item';
+
     public function init()
     {
         parent::init();
+    }
+
+    /**
+     * Backend module registered in the application as `backendModuleId`.
+     *
+     * @throws InvalidConfigException if no module is registered under that ID
+     * or it is no backend module of the package
+     */
+    public function getBackendModule(): BackendModule
+    {
+        $module = $this->backendModuleId === null || $this->backendModuleId === ''
+            ? null
+            : Yii::$app->getModule($this->backendModuleId);
+
+        if (!$module instanceof BackendModule) {
+            throw new InvalidConfigException(sprintf(
+                'The backend module "%s" must be registered as %s, got %s.',
+                (string)$this->backendModuleId,
+                BackendModule::class,
+                get_debug_type($module)
+            ));
+        }
+
+        return $module;
     }
 }

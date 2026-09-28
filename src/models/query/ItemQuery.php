@@ -33,6 +33,20 @@ class ItemQuery extends ActiveQuery
     }
 
     /**
+     * Only items with a version valid at the given date, see
+     * VersionQuery::validAt(). Archived items are not excluded; combine with
+     * active() for the items shown to readers.
+     *
+     * @param string $date date in the format `Y-m-d`
+     */
+    public function validAt(string $date): static
+    {
+        return $this->andWhere(['in', $this->qualify('id'), Version::find()
+            ->validAt($date)
+            ->select(Version::tableName() . '.[[item_id]]')]);
+    }
+
+    /**
      * Applies the list filters.
      *
      * @param string|null $title part of the title, matched with `LIKE`

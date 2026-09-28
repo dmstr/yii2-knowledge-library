@@ -10,9 +10,9 @@
  * @var dmstr\knowledgeLibrary\models\Version|null $selectedVersion
  */
 
+use dmstr\knowledgeLibrary\helpers\MarkdownHelper;
 use dmstr\knowledgeLibrary\models\Version;
 use yii\helpers\Html;
-use yii\helpers\Markdown;
 
 $stateLabels = Version::effectiveStates();
 $statusLabels = Version::statuses();
@@ -56,7 +56,7 @@ $monospace = 'font-family: ui-monospace, Menlo, monospace; font-size: 13px';
         <div class="text-muted knowledge-library-content-no-text" style="margin-bottom: 20px"><?= Html::encode(Yii::t('knowledge-library', 'No text available.')) ?></div>
     <?php else: ?>
         <div class="knowledge-library-content-text" style="border: 1px solid #e3e6ea; background: #f9fafb; border-radius: 3px; padding: 12px 16px; line-height: 1.6; max-width: 860px; margin-bottom: 20px">
-            <?= Markdown::process(Html::encode($selectedVersion->content), 'gfm') ?>
+            <?= MarkdownHelper::render($selectedVersion->content) ?>
         </div>
     <?php endif ?>
 

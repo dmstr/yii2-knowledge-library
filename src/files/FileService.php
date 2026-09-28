@@ -15,6 +15,7 @@ use yii\base\InvalidArgumentException;
 use yii\db\Query;
 use yii\helpers\FileHelper;
 use yii\validators\FileValidator;
+use yii\web\Response;
 use yii\web\UploadedFile;
 
 /**
@@ -270,6 +271,33 @@ class FileService
 
             return null;
         }
+    }
+
+    /**
+     * Sends the stored file as download (`Content-Disposition: attachment`)
+     * with its original name, MIME type and size.
+     *
+     * Whether the current user may download the file is up to the caller.
+     *
+     * @return Response|null the response, null if the stored file is missing
+     * or cannot be read
+     */
+    public function send(File $file, Response $response): ?Response
+    {
+        $stream = $this->readStream($file);
+        if ($stream === null) {
+            return null;
+        }
+
+        $options = [
+            'mimeType' => $file->mime_type ?: 'application/octet-stream',
+            'inline' => false,
+        ];
+        if ($file->size !== null) {
+            $options['fileSize'] = (int)$file->size;
+        }
+
+        return $response->sendStreamAsFile($stream, $file->name, $options);
     }
 
     /**
