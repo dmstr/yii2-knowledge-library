@@ -45,6 +45,7 @@ use yii\db\ActiveQuery;
  * @property string|null $created_by
  * @property string|null $updated_by
  *
+ * @property string[] $draftTopicIds topic IDs of the draft, see getDraftTopicIds()
  * @property-read Item|null $item
  * @property-read File[] $files
  * @property-read File[] $mainFiles
@@ -62,6 +63,30 @@ class Version extends ActiveRecord
     public const STATE_IN_FORCE = 'in_force';
     public const STATE_HISTORICAL = 'historical';
     public const STATE_UPCOMING = 'upcoming';
+
+    /**
+     * Wizard step "content": the Markdown text.
+     */
+    public const SCENARIO_CONTENT = 'content';
+
+    /**
+     * Wizard step "validity": Valid From and Valid Until; Valid From is
+     * required for types with validity period.
+     */
+    public const SCENARIO_VALIDITY = 'validity';
+
+    /**
+     * Wizard step "details": title, summary and topics of the item, stored in
+     * the draft until publication.
+     */
+    public const SCENARIO_DETAILS = 'details';
+
+    /**
+     * Results of getContentChange().
+     */
+    public const CONTENT_CHANGED = 'changed';
+    public const CONTENT_UNCHANGED = 'unchanged';
+    public const CONTENT_NONE = 'none';
 
     private const DATE_FORMAT = 'Y-m-d';
     private const DATETIME_FORMAT = 'Y-m-d H:i:s';
@@ -101,6 +126,16 @@ class Version extends ActiveRecord
         ];
     }
 
+    public function scenarios()
+    {
+        $scenarios = parent::scenarios();
+        $scenarios[self::SCENARIO_CONTENT] = ['content'];
+        $scenarios[self::SCENARIO_VALIDITY] = ['valid_from', 'valid_until'];
+        $scenarios[self::SCENARIO_DETAILS] = ['draft_title', 'draft_summary', 'draftTopicIds'];
+
+        return $scenarios;
+    }
+
     public function rules()
     {
         // Attributes prefixed with "!" are validated but only set by the
@@ -133,8 +168,37 @@ class Version extends ActiveRecord
                 'string',
                 'max' => 64,
             ],
-            [['valid_from', 'valid_until'], 'date', 'format' => 'php:' . self::DATE_FORMAT, 'strictDateFormat' => true],
+            [
+                'valid_from',
+                'required',
+                'on' => self::SCENARIO_VALIDITY,
+                'when' => fn () => $this->getItemType() === null || $this->getItemType()->has_validity_period,
+                'message' => ValidityCheck::invalidDateMessage('valid_from'),
+            ],
+            [
+                'valid_from',
+                'date',
+                'format' => 'php:' . self::DATE_FORMAT,
+                'strictDateFormat' => true,
+                'message' => ValidityCheck::invalidDateMessage('valid_from'),
+            ],
+            [
+                'valid_until',
+                'date',
+                'format' => 'php:' . self::DATE_FORMAT,
+                'strictDateFormat' => true,
+                'message' => ValidityCheck::invalidDateMessage('valid_until'),
+            ],
             ['valid_from', 'validateValidityPeriod', 'skipOnEmpty' => false],
+            ['draft_title', 'trim', 'on' => self::SCENARIO_DETAILS],
+            ['draft_title', 'required', 'on' => self::SCENARIO_DETAILS],
+            ['draft_title', 'string', 'max' => 255],
+            ['draft_summary', 'string'],
+            [
+                'draftTopicIds',
+                'each',
+                'rule' => ['exist', 'targetClass' => Topic::class, 'targetAttribute' => 'id'],
+            ],
             ['corrects_version_id', 'compare', 'compareAttribute' => 'id', 'operator' => '!=='],
             [
                 'corrects_version_id',
@@ -170,6 +234,9 @@ class Version extends ActiveRecord
             'withdrawn_at' => Yii::t('knowledge-library', 'Withdrawn At'),
             'withdraw_reason' => Yii::t('knowledge-library', 'Withdraw Reason'),
             'corrects_version_id' => Yii::t('knowledge-library', 'Corrects Version'),
+            'draft_title' => Yii::t('knowledge-library', 'Title'),
+            'draft_summary' => Yii::t('knowledge-library', 'Summary'),
+            'draftTopicIds' => Yii::t('knowledge-library', 'Topics'),
             'created_at' => Yii::t('knowledge-library', 'Created At'),
             'updated_at' => Yii::t('knowledge-library', 'Updated At'),
             'created_by' => Yii::t('knowledge-library', 'Created By'),
@@ -187,14 +254,28 @@ class Version extends ActiveRecord
             return;
         }
 
-        if (trim((string)$this->content) !== '' || $this->hasMainFile()) {
+        if ($this->hasContent()) {
             return;
         }
 
-        $this->addError(
-            $attribute,
-            Yii::t('knowledge-library', 'Enter a text or attach a main file.')
-        );
+        $this->addError($attribute, static::noContentMessage());
+    }
+
+    /**
+     * Whether the version has content: a non-empty text or at least one main
+     * file (stored as file row). Attachments do not count.
+     */
+    public function hasContent(): bool
+    {
+        return trim((string)$this->content) !== '' || $this->hasMainFile();
+    }
+
+    /**
+     * Message for a version without content, see hasContent().
+     */
+    public static function noContentMessage(): string
+    {
+        return Yii::t('knowledge-library', 'Enter a text or attach a main file.');
     }
 
     /**
@@ -211,13 +292,7 @@ class Version extends ActiveRecord
         if (!$type->has_validity_period) {
             foreach (['valid_from', 'valid_until'] as $attribute) {
                 if ($this->$attribute !== null && $this->$attribute !== '') {
-                    $this->addError(
-                        $attribute,
-                        Yii::t(
-                            'knowledge-library',
-                            'The type of this item has no validity period, leave the date empty.'
-                        )
-                    );
+                    $this->addError($attribute, ValidityCheck::noValidityPeriodMessage());
                 }
             }
 
@@ -243,23 +318,13 @@ class Version extends ActiveRecord
         }
 
         if ($validUntil !== null && $validUntil < $validFrom) {
-            $this->addError(
-                'valid_until',
-                Yii::t('knowledge-library', 'Valid Until must not be before Valid From.')
-            );
+            $this->addError('valid_until', ValidityCheck::untilBeforeFromMessage());
         }
 
         if (!$this->isPublishedInDatabase() && empty($this->corrects_version_id)) {
             $latest = $this->findLatestPublishedSibling();
             if ($latest !== null && $latest->valid_from !== null && $validFrom <= $latest->valid_from) {
-                $this->addError(
-                    'valid_from',
-                    Yii::t(
-                        'knowledge-library',
-                        'A new version must start after {date}, the start of the latest published version. Use a correction to change a published version.',
-                        ['date' => $latest->valid_from]
-                    )
-                );
+                $this->addError('valid_from', ValidityCheck::retroactiveMessage($latest));
             }
         }
     }
@@ -310,6 +375,209 @@ class Version extends ActiveRecord
     {
         return $this->hasMany(History::class, ['version_id' => 'id'])
             ->orderBy(['created_at' => SORT_DESC]);
+    }
+
+    /**
+     * Topic IDs stored in the draft (`draft_topic_ids`), empty if none.
+     *
+     * @return string[]
+     */
+    public function getDraftTopicIds(): array
+    {
+        if ($this->draft_topic_ids === null || $this->draft_topic_ids === '') {
+            return [];
+        }
+
+        $ids = json_decode($this->draft_topic_ids, true);
+
+        return is_array($ids) ? array_values(array_map('strval', array_filter($ids, 'is_scalar'))) : [];
+    }
+
+    /**
+     * Stores topic IDs in the draft as JSON list; null or an empty string
+     * store an empty list (e.g. an empty multiple select).
+     *
+     * @param string[]|string|null $topicIds
+     */
+    public function setDraftTopicIds($topicIds): void
+    {
+        if ($topicIds === null || $topicIds === '') {
+            $topicIds = [];
+        }
+
+        $this->draft_topic_ids = json_encode(
+            array_values(array_unique(array_map('strval', (array)$topicIds)))
+        );
+    }
+
+    /**
+     * Returns the draft of the item, creating it if the item has none.
+     *
+     * A new draft starts from the published version with the highest
+     * number: its text is copied, and its files are copied as new file rows
+     * pointing to the same stored files (see File::copyToVersion()). Title,
+     * summary and topics are taken from the item. For types with validity
+     * period Valid From is prefilled, see getSuggestedValidFrom().
+     *
+     * An item has at most one draft. If saving fails (e.g. a concurrent
+     * request created a draft meanwhile), the returned version is not saved
+     * (`getIsNewRecord()` is true) and carries the errors.
+     *
+     * @param string|null $today date in the format `Y-m-d`, today if null
+     */
+    public static function createDraft(Item $item, ?string $today = null): self
+    {
+        $existing = static::find()
+            ->forItem($item->id)
+            ->andWhere(['status' => self::STATUS_DRAFT])
+            ->orderBy(['number' => SORT_DESC])
+            ->limit(1)
+            ->one();
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        $base = $item->getLatestPublishedVersion();
+
+        $draft = new static();
+        $draft->item_id = $item->id;
+        $draft->status = self::STATUS_DRAFT;
+        $draft->populateRelation('item', $item);
+        $draft->content = $base !== null ? $base->content : null;
+        $draft->draft_title = $item->title;
+        $draft->draft_summary = $item->summary;
+        $draft->setDraftTopicIds($item->getTopicIds());
+        $draft->valid_from = $draft->getSuggestedValidFrom($today);
+
+        $transaction = static::getDb()->beginTransaction();
+        try {
+            if (!$draft->save()) {
+                $transaction->rollBack();
+
+                return $draft;
+            }
+
+            foreach ($base !== null ? $base->files : [] as $file) {
+                $copy = $file->copyToVersion($draft);
+                if ($copy->hasErrors()) {
+                    $transaction->rollBack();
+                    $draft->setIsNewRecord(true);
+                    $draft->addError('item_id', implode(' ', $copy->getFirstErrors()));
+
+                    return $draft;
+                }
+            }
+
+            $transaction->commit();
+        } catch (Throwable $e) {
+            $transaction->rollBack();
+
+            throw $e;
+        }
+
+        unset($draft->files, $draft->mainFiles, $draft->attachments);
+
+        return $draft;
+    }
+
+    /**
+     * Suggested Valid From of a new version: the day after the start of the
+     * predecessor, at least today; today without predecessor. Null for types
+     * without validity period.
+     *
+     * @param string|null $today date in the format `Y-m-d`, today if null
+     */
+    public function getSuggestedValidFrom(?string $today = null): ?string
+    {
+        $type = $this->getItemType();
+        if ($type !== null && !$type->has_validity_period) {
+            return null;
+        }
+
+        $today ??= date(self::DATE_FORMAT);
+        $predecessor = $this->getPredecessor();
+        if ($predecessor === null || $predecessor->valid_from === null) {
+            return $today;
+        }
+
+        $next = (new DateTimeImmutable($predecessor->valid_from))->modify('+1 day')->format(self::DATE_FORMAT);
+
+        return max($next, $today);
+    }
+
+    /**
+     * The version a new version follows: the published version of the item
+     * with the highest number, except this one.
+     */
+    public function getPredecessor(): ?self
+    {
+        if (empty($this->item_id)) {
+            return null;
+        }
+
+        return $this->findLatestPublishedSibling();
+    }
+
+    /**
+     * Text compared to the predecessor: `changed`, `unchanged` or `none` if
+     * this version has no text. Line endings and surrounding whitespace are
+     * ignored; without predecessor any text counts as changed.
+     */
+    public function getContentChange(): string
+    {
+        $text = static::normalizeText($this->content);
+        if ($text === '') {
+            return self::CONTENT_NONE;
+        }
+
+        $predecessor = $this->getPredecessor();
+        if ($predecessor !== null && static::normalizeText($predecessor->content) === $text) {
+            return self::CONTENT_UNCHANGED;
+        }
+
+        return self::CONTENT_CHANGED;
+    }
+
+    /**
+     * Short description of the content, e.g. "Text, 1 main document,
+     * 2 attachments", based on the stored file rows.
+     */
+    public function getContentSummary(): string
+    {
+        $parts = [];
+        if (trim((string)$this->content) !== '') {
+            $parts[] = Yii::t('knowledge-library', 'Text');
+        }
+
+        $counts = [File::KIND_MAIN => 0, File::KIND_ATTACHMENT => 0];
+        if (!$this->getIsNewRecord()) {
+            $rows = File::find()
+                ->select(['kind', 'count' => 'COUNT(*)'])
+                ->where(['version_id' => $this->id])
+                ->groupBy('kind')
+                ->asArray()
+                ->all();
+            foreach ($rows as $row) {
+                $counts[$row['kind']] = (int)$row['count'];
+            }
+        }
+
+        if ((int)$counts[File::KIND_MAIN] > 0) {
+            $parts[] = Yii::t(
+                'knowledge-library',
+                '{count, plural, =1{# main document} other{# main documents}}',
+                ['count' => (int)$counts[File::KIND_MAIN]]
+            );
+        }
+        if ((int)$counts[File::KIND_ATTACHMENT] > 0) {
+            $parts[] = Yii::t(
+                'knowledge-library',
+                '{count, plural, =1{# attachment} other{# attachments}}',
+                ['count' => (int)$counts[File::KIND_ATTACHMENT]]
+            );
+        }
+
+        return $parts === [] ? Yii::t('knowledge-library', 'empty') : implode(', ', $parts);
     }
 
     /**
@@ -373,6 +641,10 @@ class Version extends ActiveRecord
      * A version in review can always be published, a draft only if the type
      * of the item does not require a review.
      *
+     * If the draft carries details (`draft_title` not null), title, summary
+     * and topics are applied to the item and the draft fields are cleared,
+     * in the same transaction.
+     *
      * @return bool whether the version was saved; see the errors otherwise
      */
     public function publish(): bool
@@ -401,7 +673,7 @@ class Version extends ActiveRecord
             'status' => self::STATUS_PUBLISHED,
             'published_by' => DefaultUserProvider::resolve()->getCurrentUserReference(),
             'published_at' => date(self::DATETIME_FORMAT),
-        ], fn () => $this->endPredecessor());
+        ], fn () => $this->endPredecessor() && $this->applyDraftDetails());
     }
 
     /**
@@ -416,6 +688,9 @@ class Version extends ActiveRecord
     private function transition(array $attributes, ?callable $beforeSave = null): bool
     {
         $previous = $this->getAttributes();
+        $scenario = $this->getScenario();
+        // Transitions validate all rules, whatever step was edited last.
+        $this->setScenario(self::SCENARIO_DEFAULT);
         $this->setAttributes($attributes, false);
 
         $transaction = static::getDb()->beginTransaction();
@@ -426,6 +701,7 @@ class Version extends ActiveRecord
                 && $this->save(false)
             ) {
                 $transaction->commit();
+                $this->setScenario($scenario);
 
                 return true;
             }
@@ -434,11 +710,13 @@ class Version extends ActiveRecord
         } catch (Throwable $e) {
             $transaction->rollBack();
             $this->setAttributes($previous, false);
+            $this->setScenario($scenario);
 
             throw $e;
         }
 
         $this->setAttributes($previous, false);
+        $this->setScenario($scenario);
 
         return false;
     }
@@ -482,6 +760,51 @@ class Version extends ActiveRecord
         }
 
         return true;
+    }
+
+    /**
+     * Applies title, summary and topics of the draft to the item and clears
+     * the draft fields; does nothing if the draft carries no details.
+     */
+    private function applyDraftDetails(): bool
+    {
+        if ($this->draft_title === null) {
+            return true;
+        }
+
+        // A fresh instance, so a failed publication leaves the related item
+        // of this version untouched.
+        $item = Item::findOne($this->item_id);
+        if ($item === null) {
+            return true;
+        }
+
+        $item->title = $this->draft_title;
+        $item->summary = $this->draft_summary;
+        if ($this->draft_topic_ids !== null) {
+            $item->topicIds = $this->getDraftTopicIds();
+        }
+
+        if (!$item->validate(['title', 'summary', 'topicIds']) || !$item->save(false)) {
+            foreach ($item->getFirstErrors() as $error) {
+                $this->addError('draft_title', $error);
+            }
+
+            return false;
+        }
+
+        $this->populateRelation('item', $item);
+
+        $this->draft_title = null;
+        $this->draft_summary = null;
+        $this->draft_topic_ids = null;
+
+        return true;
+    }
+
+    private static function normalizeText(?string $text): string
+    {
+        return trim(str_replace(["\r\n", "\r"], "\n", (string)$text));
     }
 
     private function getItemType(): ?Type

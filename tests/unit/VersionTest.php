@@ -6,6 +6,7 @@ use dmstr\knowledgeLibrary\models\File;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\tests\TestCase;
+use Yii;
 
 class VersionTest extends TestCase
 {
@@ -107,8 +108,8 @@ class VersionTest extends TestCase
         ]);
 
         $this->assertFalse($version->validate());
-        $this->assertTrue($version->hasErrors('valid_from'));
-        $this->assertTrue($version->hasErrors('valid_until'));
+        $this->assertSame('Enter "Valid From" in the format DD.MM.YYYY.', $version->getFirstError('valid_from'));
+        $this->assertSame('Enter "Valid Until" in the format DD.MM.YYYY.', $version->getFirstError('valid_until'));
     }
 
     public function testValidUntilBeforeValidFromIsRejected(): void
@@ -188,7 +189,12 @@ class VersionTest extends TestCase
         foreach (['2026-02-01', '2026-03-01'] as $validFrom) {
             $version = new Version(['item_id' => $item->id, 'valid_from' => $validFrom]);
             $this->assertFalse($version->validate(), $validFrom);
-            $this->assertTrue($version->hasErrors('valid_from'), $validFrom);
+            $this->assertSame(
+                'The date is before the start of version 1 (' . Yii::$app->formatter->asDate('2026-03-01')
+                    . '). Retroactive changes are only possible with "Correct".',
+                $version->getFirstError('valid_from'),
+                $validFrom
+            );
         }
 
         $version = new Version(['item_id' => $item->id, 'valid_from' => '2026-03-02']);

@@ -59,12 +59,14 @@ class File extends ActiveRecord
             ['kind', 'default', 'value' => self::KIND_ATTACHMENT],
             ['kind', 'in', 'range' => array_keys(static::kinds())],
             ['title', 'trim'],
+            ['title', 'default', 'value' => null],
             [['title', 'name', 'mime_type'], 'string', 'max' => 255],
             [['storage_id', 'path', 'name'], 'required'],
             ['storage_id', 'string', 'max' => 255],
             ['storage_item_id', 'string', 'max' => 36],
             ['path', 'string', 'max' => 1024],
             ['size', 'integer', 'min' => 0],
+            ['content_hash', 'match', 'pattern' => '/^[0-9a-f]{64}$/'],
             ['position', 'default', 'value' => 0],
             ['position', 'integer'],
         ];
@@ -83,12 +85,40 @@ class File extends ActiveRecord
             'name' => Yii::t('knowledge-library', 'File Name'),
             'mime_type' => Yii::t('knowledge-library', 'MIME Type'),
             'size' => Yii::t('knowledge-library', 'Size'),
+            'content_hash' => Yii::t('knowledge-library', 'Content Hash'),
             'position' => Yii::t('knowledge-library', 'Position'),
             'created_at' => Yii::t('knowledge-library', 'Created At'),
             'updated_at' => Yii::t('knowledge-library', 'Updated At'),
             'created_by' => Yii::t('knowledge-library', 'Created By'),
             'updated_by' => Yii::t('knowledge-library', 'Updated By'),
         ];
+    }
+
+    /**
+     * Copies this file row to another version. The copy points to the same
+     * stored file (same storage and path), the storage is not touched.
+     *
+     * @return File the saved copy, or the unsaved copy with errors
+     */
+    public function copyToVersion(Version $target): File
+    {
+        $copy = new static();
+        $copy->setAttributes([
+            'version_id' => $target->id,
+            'kind' => $this->kind,
+            'title' => $this->title,
+            'storage_id' => $this->storage_id,
+            'storage_item_id' => $this->storage_item_id,
+            'path' => $this->path,
+            'name' => $this->name,
+            'mime_type' => $this->mime_type,
+            'size' => $this->size,
+            'content_hash' => $this->content_hash,
+            'position' => $this->position,
+        ], false);
+        $copy->save();
+
+        return $copy;
     }
 
     public function getVersion(): ActiveQuery
