@@ -794,9 +794,12 @@ class VersionControllerTest extends WebTestCase
         $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
 
         $accept = '.pdf,.docx,.xlsx,.pptx,.odt,.ods,.txt,.jpg,.jpeg,.png,.gif,.webp';
-        $this->assertStringContainsString('<input type="file" class="knowledge-library-wizard-main-upload" name="mainFiles[]" multiple accept="' . $accept . '">', $html);
-        $this->assertStringContainsString('name="attachments[0]"', $html);
-        $this->assertStringContainsString('name="attachmentTitles[0]"', $html);
+        // Native inputs, usable without JavaScript.
+        $this->assertMatchesRegularExpression('#<input type="file" id="knowledge-library-wizard-main-upload"[^>]* name="mainFiles\[\]" multiple accept="' . preg_quote($accept, '#') . '">#', $html);
+        $this->assertStringContainsString('<label style="display: block; font-weight: 400; margin-bottom: 4px" for="knowledge-library-wizard-main-upload">Add main documents</label>', $html);
+        $this->assertMatchesRegularExpression('#<input type="file"[^>]* name="attachments\[0\]"#', $html);
+        $this->assertMatchesRegularExpression('#<input type="text"[^>]* name="attachmentTitles\[0\]"#', $html);
+        $this->assertStringContainsString('<button type="button" class="knowledge-library-wizard-add-attachment"', $html);
         $this->assertStringContainsString('Allowed types: ' . self::ALLOWED . '. At most 20 MB per file.', $html);
         $this->assertStringNotContainsString('knowledge-library-wizard-file-error', $html);
     }
@@ -875,6 +878,40 @@ class VersionControllerTest extends WebTestCase
         $item = Item::findOne($item->id);
         $this->assertSame($editor->uuid, $item->source_uploaded_by);
         $this->assertNotNull($item->source_uploaded_at);
+    }
+
+    public function testMainDocumentsCanBeAddedInSeveralRounds(): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->postFiles(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => '']],
+            ['mainFiles[]' => [$this->sourceFile('one.pdf', self::PDF), $this->sourceFile('two.txt', 'Two text')]],
+            ['id' => $draft->id, 'step' => 1]
+        );
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertSame(2, substr_count($html, 'data-kl-main-file="1"'));
+
+        $this->postFiles(
+            'version/update',
+            ['next' => 1, 'Version' => ['content' => '']],
+            ['mainFiles[]' => $this->sourceFile('three.pdf', self::PDF)],
+            ['id' => $draft->id, 'step' => 1]
+        );
+
+        $this->assertRedirectsTo(['version/update', 'id' => $draft->id, 'step' => 2]);
+        $mainFiles = Version::findOne($draft->id)->mainFiles;
+        $this->assertSame(['one.pdf', 'two.txt', 'three.pdf'], array_map(static fn (File $file) => $file->name, $mainFiles));
+        $this->assertSame([0, 1, 2], array_map(static fn (File $file) => (int)$file->position, $mainFiles));
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertSame(3, substr_count($html, 'data-kl-main-file="1"'));
+        foreach (['one.pdf', 'two.txt', 'three.pdf'] as $name) {
+            $this->assertStringContainsString('>' . $name . '</span>', $html);
+        }
     }
 
     public function testAttachmentsAloneAreNoContent(): void

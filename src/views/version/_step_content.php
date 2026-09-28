@@ -107,10 +107,11 @@ jQuery(document).on('change', wizard + ' .knowledge-library-wizard-main-upload',
     }
     jQuery(this).closest('form').find('[data-kl-blocks-next]').trigger('change');
 });
-jQuery(document).on('click', wizard + ' .knowledge-library-wizard-add-attachment', function () {
+jQuery(document).on('click', wizard + ' .knowledge-library-wizard-add-attachment', function (event) {
+    event.preventDefault();
     var list = jQuery(this).closest('.knowledge-library-wizard-attachments').find('.knowledge-library-wizard-attachment-uploads');
-    var index = list.children().length;
-    var row = list.children().last().clone();
+    var index = list.children('.knowledge-library-wizard-attachment-upload').length;
+    var row = list.children('.knowledge-library-wizard-attachment-upload').first().clone();
     row.find('input').each(function () {
         var input = jQuery(this);
         input.attr('name', input.attr('name').replace(/\[\d+\]$/, '[' + index + ']'));
@@ -158,14 +159,20 @@ JS, View::POS_READY, 'knowledge-library-wizard-files');
             <?php if ($mainFiles === []): ?>
                 <div class="text-muted" style="margin-bottom: 6px"><?= Html::encode(Yii::t('knowledge-library', 'No main documents.')) ?></div>
             <?php endif ?>
-            <label class="knowledge-library-wizard-main-upload-label" style="display: block; font-weight: 400; margin: 4px 0 0">
-                <span style="display: block; margin-bottom: 4px"><i class="fa fa-plus"></i> <?= Html::encode(Yii::t('knowledge-library', 'Add main documents')) ?></span>
+            <div class="knowledge-library-wizard-main-upload-row" style="margin: 8px 0 0">
+                <?= Html::label(
+                    Html::encode(Yii::t('knowledge-library', 'Add main documents')),
+                    'knowledge-library-wizard-main-upload',
+                    ['style' => 'display: block; font-weight: 400; margin-bottom: 4px']
+                ) ?>
+                <?php // Native file input: works without JavaScript, several files at once. ?>
                 <?= Html::fileInput('mainFiles[]', null, [
+                    'id' => 'knowledge-library-wizard-main-upload',
                     'multiple' => true,
                     'accept' => $accept,
                     'class' => 'knowledge-library-wizard-main-upload',
                 ]) ?>
-            </label>
+            </div>
         </div>
 
         <div class="knowledge-library-wizard-attachments" style="margin-top: 22px">
@@ -201,17 +208,28 @@ JS, View::POS_READY, 'knowledge-library-wizard-files');
             <?php endif ?>
             <div class="knowledge-library-wizard-attachment-uploads">
                 <div class="knowledge-library-wizard-attachment-upload" style="display: flex; align-items: center; gap: 12px; margin: 4px 0 6px">
-                    <?= Html::fileInput('attachments[0]', null, ['accept' => $accept, 'style' => 'flex: 1']) ?>
+                    <?= Html::fileInput('attachments[0]', null, [
+                        'accept' => $accept,
+                        'class' => 'knowledge-library-wizard-attachment-file',
+                        'aria-label' => Yii::t('knowledge-library', 'Add attachment'),
+                        'style' => 'flex: 1',
+                    ]) ?>
                     <?= Html::textInput('attachmentTitles[0]', null, [
                         'class' => 'form-control',
                         'placeholder' => Yii::t('knowledge-library', 'Title of the attachment'),
+                        'aria-label' => Yii::t('knowledge-library', 'Title of the attachment'),
                         'style' => 'flex: 1',
                     ]) ?>
                 </div>
             </div>
             <?= Html::button(
                 '<i class="fa fa-plus"></i> ' . Html::encode(Yii::t('knowledge-library', 'Add attachment')),
-                ['class' => 'knowledge-library-wizard-add-attachment', 'style' => $addStyle . '; display: none']
+                [
+                    'type' => 'button',
+                    'class' => 'knowledge-library-wizard-add-attachment',
+                    // Shown by the inline script; without JavaScript one row is available.
+                    'style' => $addStyle . '; display: none',
+                ]
             ) ?>
         </div>
 
