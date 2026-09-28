@@ -5,8 +5,9 @@
          failOnWarning="true"
          failOnRisky="true">
     <php>
-        <!-- Every test builds its own application; the suite needs more than 128M on PHP 8.1. -->
-        <ini name="memory_limit" value="512M"/>
+        <!-- The suite peaks around 20M. A fixed, moderate limit makes a per-test leak fail
+             early instead of passing on a runner with a high or unlimited default. -->
+        <ini name="memory_limit" value="128M"/>
     </php>
     <testsuites>
         <testsuite name="unit">

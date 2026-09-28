@@ -91,7 +91,6 @@ abstract class WebTestCase extends TestCase
         parent::tearDown();
 
         Yii::$container = new Container();
-        Yii::setLogger(null);
         TestIdentity::reset();
         $_SERVER = $this->serverBackup;
         $_GET = $this->getBackup;

@@ -20,13 +20,6 @@ class ItemCountQueryTest extends TestCase
         parent::setUp();
     }
 
-    protected function tearDown(): void
-    {
-        parent::tearDown();
-
-        Yii::setLogger(null);
-    }
-
     public function testTypeCountIncludesArchivedItems(): void
     {
         $law = $this->createType(['name' => 'Law']);

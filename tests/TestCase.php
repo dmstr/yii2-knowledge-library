@@ -152,6 +152,7 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
             Yii::$app->db->close();
         }
         Yii::$app = null;
+        $this->releaseLogger();
 
         if ($this->storageDir !== null) {
             FileHelper::removeDirectory($this->storageDir);
@@ -159,6 +160,23 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         }
 
         parent::tearDown();
+    }
+
+    /**
+     * Empties the current logger and replaces it with a fresh one.
+     *
+     * `yii\log\Logger::init()` registers a shutdown function holding the
+     * logger, so a logger replaced via `Yii::setLogger()` is never freed
+     * before the end of the process. Tests that keep messages (flushInterval
+     * 0 or PHP_INT_MAX) would otherwise leak all log and profiling messages
+     * of every test, including every SQL query.
+     */
+    protected function releaseLogger(): void
+    {
+        $logger = Yii::getLogger();
+        $logger->messages = [];
+        $logger->dispatcher = null;
+        Yii::setLogger(null);
     }
 
     /**
