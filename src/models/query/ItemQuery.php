@@ -3,6 +3,7 @@
 namespace dmstr\knowledgeLibrary\models\query;
 
 use dmstr\knowledgeLibrary\models\Item;
+use dmstr\knowledgeLibrary\models\Version;
 use yii\db\ActiveQuery;
 use yii\db\Expression;
 use yii\db\Query;
@@ -75,9 +76,37 @@ class ItemQuery extends ActiveQuery
     }
 
     /**
+     * Adds the column `lastChange`: the most recent `updated_at` of the item
+     * and its versions, the item's own value if it has no versions.
+     *
+     * The version maximum is a correlated subquery; `CASE` instead of
+     * `GREATEST()`, which is missing in SQLite and returns NULL in MySQL as
+     * soon as one argument is NULL.
+     */
+    public function withLastChange(): static
+    {
+        [, $alias] = $this->getTableNameAndAlias();
+        if (empty($this->select)) {
+            $this->select([$alias . '.*']);
+        }
+
+        $updatedAt = $this->qualify('updated_at');
+        $versionMaximum = '(SELECT MAX([[kl_last_change_version.updated_at]])'
+            . ' FROM ' . Version::tableName() . ' [[kl_last_change_version]]'
+            . ' WHERE [[kl_last_change_version.item_id]] = ' . $this->qualify('id') . ')';
+
+        return $this->addSelect([
+            'lastChange' => new Expression(
+                "CASE WHEN $versionMaximum > $updatedAt OR $updatedAt IS NULL"
+                . " THEN $versionMaximum ELSE $updatedAt END"
+            ),
+        ]);
+    }
+
+    /**
      * Column name qualified with the table name or alias of this query.
      */
-    private function qualify(string $name): string
+    protected function qualify(string $name): string
     {
         [, $alias] = $this->getTableNameAndAlias();
 

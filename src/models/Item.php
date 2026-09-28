@@ -40,6 +40,10 @@ class Item extends ActiveRecord
     public const SOURCE_IMPORT_MANUAL = 'manual';
     public const SOURCE_IMPORT_AUTOMATIC = 'automatic';
 
+    public const SCENARIO_CREATE = 'create';
+    public const SCENARIO_UPDATE = 'update';
+    public const SCENARIO_SOURCE = 'source';
+
     private const TABLE_ITEM_TOPIC = '{{%knowledge_library_item_topic}}';
 
     /**
@@ -48,6 +52,12 @@ class Item extends ActiveRecord
      * @var string[]|null
      */
     private ?array $_topicIds = null;
+
+    /**
+     * Most recent change of the item or one of its versions, only populated
+     * by queries using ItemQuery::withLastChange().
+     */
+    public ?string $lastChange = null;
 
     public static function tableName()
     {
@@ -75,7 +85,20 @@ class Item extends ActiveRecord
         // Saving includes syncing the topic assignments.
         return [
             self::SCENARIO_DEFAULT => self::OP_ALL,
+            self::SCENARIO_CREATE => self::OP_ALL,
+            self::SCENARIO_UPDATE => self::OP_ALL,
+            self::SCENARIO_SOURCE => self::OP_ALL,
         ];
+    }
+
+    public function scenarios()
+    {
+        $scenarios = parent::scenarios();
+        $scenarios[self::SCENARIO_CREATE] = ['title', 'type_id'];
+        $scenarios[self::SCENARIO_UPDATE] = ['title', 'type_id'];
+        $scenarios[self::SCENARIO_SOURCE] = ['source_name', 'source_reference', 'source_url', 'source_import_mode'];
+
+        return $scenarios;
     }
 
     public function rules()
@@ -83,12 +106,15 @@ class Item extends ActiveRecord
         return [
             ['type_id', 'required'],
             ['type_id', 'exist', 'targetClass' => Type::class, 'targetAttribute' => 'id'],
+            ['type_id', 'validateTypeLock'],
             ['title', 'trim'],
             ['title', 'required'],
             ['title', 'string', 'max' => 255],
             ['summary', 'string'],
             ['is_archived', 'default', 'value' => false],
             ['is_archived', 'boolean'],
+            ['source_name', 'trim'],
+            ['source_name', 'required', 'on' => self::SCENARIO_SOURCE],
             [['source_name', 'source_reference'], 'string', 'max' => 255],
             ['source_url', 'string', 'max' => 2048],
             ['source_url', 'url'],
@@ -115,11 +141,38 @@ class Item extends ActiveRecord
             'source_uploaded_at' => Yii::t('knowledge-library', 'Source Uploaded At'),
             'source_uploaded_by' => Yii::t('knowledge-library', 'Source Uploaded By'),
             'topicIds' => Yii::t('knowledge-library', 'Topics'),
+            'lastChange' => Yii::t('knowledge-library', 'Last Change'),
             'created_at' => Yii::t('knowledge-library', 'Created At'),
             'updated_at' => Yii::t('knowledge-library', 'Updated At'),
             'created_by' => Yii::t('knowledge-library', 'Created By'),
             'updated_by' => Yii::t('knowledge-library', 'Updated By'),
         ];
+    }
+
+    /**
+     * Rejects a change of the type once the item has versions, as the
+     * validity rules of the versions depend on it.
+     */
+    public function validateTypeLock(string $attribute): void
+    {
+        if ($this->getIsNewRecord() || !$this->isAttributeChanged($attribute, false)) {
+            return;
+        }
+
+        if ($this->getVersions()->exists()) {
+            $this->addError(
+                $attribute,
+                Yii::t('knowledge-library', 'The type cannot be changed once the item has versions.')
+            );
+        }
+    }
+
+    /**
+     * Whether the type can no longer be changed because versions exist.
+     */
+    public function isTypeLocked(): bool
+    {
+        return !$this->getIsNewRecord() && $this->getVersions()->exists();
     }
 
     /**
