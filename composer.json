@@ -1,0 +1,48 @@
+{
+    "name": "dmstr/yii2-knowledge-library",
+    "description": "Knowledge library for Yii2 applications: versioned, time-valid knowledge items with review, relations and history",
+    "type": "yii2-extension",
+    "keywords": [
+        "yii2",
+        "extension",
+        "knowledge",
+        "knowledge-base",
+        "rag",
+        "versioning"
+    ],
+    "license": "MIT",
+    "require": {
+        "php": "^8.1",
+        "yiisoft/yii2": "^2.0.45",
+        "dmstr/yii2-rbac-migration": "^2.0",
+        "dmstr/yii2-web": "^1.1",
+        "eluhr/yii2-uuid-attribute-behavior": "^1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5 || ^11 || ^12 || ^13"
+    },
+    "suggest": {
+        "2amigos/yii2-usuario": "The default user provider works with its identity and user UUIDs"
+    },
+    "autoload": {
+        "psr-4": {
+            "dmstr\\knowledgeLibrary\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "dmstr\\knowledgeLibrary\\tests\\": "tests/"
+        }
+    },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://asset-packagist.org"
+        }
+    ],
+    "config": {
+        "allow-plugins": {
+            "yiisoft/yii2-composer": true
+        }
+    }
+}

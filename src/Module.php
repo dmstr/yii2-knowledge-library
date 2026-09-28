@@ -1,0 +1,49 @@
+<?php
+
+namespace dmstr\knowledgeLibrary;
+
+use dmstr\knowledgeLibrary\traits\RegistersTranslationsTrait;
+use dmstr\web\traits\AccessBehaviorTrait;
+
+/**
+ * Backend module for managing knowledge items.
+ */
+class Module extends \yii\base\Module
+{
+    use AccessBehaviorTrait;
+    use RegistersTranslationsTrait;
+
+    public const PERMISSION_EDITOR = 'knowledge_library_editor';
+    public const PERMISSION_REVIEWER = 'knowledge_library_reviewer';
+    public const PERMISSION_ADMIN = 'knowledge_library_admin';
+
+    public const ROLE_EDITOR = 'KnowledgeLibraryEditor';
+    public const ROLE_REVIEWER = 'KnowledgeLibraryReviewer';
+    public const ROLE_ADMIN = 'KnowledgeLibraryAdmin';
+
+    /**
+     * Name of the application component used as (flysystem-based) file
+     * storage for version files.
+     */
+    public string $fileStorage = 'fs';
+
+    /**
+     * Target directory inside the file storage.
+     */
+    public string $targetPath = 'knowledge-library';
+
+    /**
+     * Definition of a user provider object, resolved via Yii::createObject().
+     * Can be a class name, a configuration array or an object. Null uses the
+     * default provider.
+     *
+     * @var string|array|object|null
+     */
+    public $userProvider = null;
+
+    public function init()
+    {
+        parent::init();
+        $this->registerTranslations();
+    }
+}
