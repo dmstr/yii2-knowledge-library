@@ -11,6 +11,7 @@ use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\Module;
 use dmstr\knowledgeLibrary\tests\WebTestCase;
 use Yii;
+use yii\helpers\FileHelper;
 use yii\helpers\Html;
 use yii\helpers\Url;
 use yii\web\ForbiddenHttpException;
@@ -22,6 +23,40 @@ use yii\web\NotFoundHttpException;
 class VersionControllerTest extends WebTestCase
 {
     private const UNKNOWN_ID = '00000000-0000-4000-8000-000000000000';
+
+    /**
+     * Minimal PDF, detected as `application/pdf`.
+     */
+    private const PDF = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+
+    private const ALLOWED = 'pdf, docx, xlsx, pptx, odt, ods, txt, jpg, jpeg, png, gif, webp';
+
+    /**
+     * Properties of the backend module set for the test, see moduleConfig().
+     */
+    private array $moduleProperties = [];
+
+    /**
+     * Temporary directory of the source files of uploads, null until first
+     * use.
+     */
+    private ?string $sourceDir = null;
+
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        if ($this->sourceDir !== null) {
+            FileHelper::removeDirectory($this->sourceDir);
+            $this->sourceDir = null;
+        }
+        $this->moduleProperties = [];
+    }
+
+    protected function moduleConfig(): array
+    {
+        return array_merge(parent::moduleConfig(), $this->moduleProperties);
+    }
 
     public function testGuestIsRedirectedToLoginOnAllRoutes(): void
     {
@@ -749,6 +784,346 @@ class VersionControllerTest extends WebTestCase
 
         $this->post('version/update', ['save' => 1, 'Version' => ['content' => 'Text']], ['id' => $draft->id, 'step' => 1]);
         $this->assertSame('Entwurf gespeichert.', $this->getFlash('success'));
+    }
+
+    public function testStepOneShowsUploadInputsAndLimits(): void
+    {
+        $draft = Version::createDraft($this->createPeriodItem());
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+
+        $accept = '.pdf,.docx,.xlsx,.pptx,.odt,.ods,.txt,.jpg,.jpeg,.png,.gif,.webp';
+        $this->assertStringContainsString('<input type="file" class="knowledge-library-wizard-main-upload" name="mainFiles[]" multiple accept="' . $accept . '">', $html);
+        $this->assertStringContainsString('name="attachments[0]"', $html);
+        $this->assertStringContainsString('name="attachmentTitles[0]"', $html);
+        $this->assertStringContainsString('Allowed types: ' . self::ALLOWED . '. At most 20 MB per file.', $html);
+        $this->assertStringNotContainsString('knowledge-library-wizard-file-error', $html);
+    }
+
+    public function testUploadWithDisallowedExtensionIsRejected(): void
+    {
+        $this->assertUploadRejected(
+            ['name' => 'script.html', 'content' => '<html></html>'],
+            'The file "script.html" is not an allowed type (allowed: ' . self::ALLOWED . ').'
+        );
+    }
+
+    public function testUploadWithMimeTypeMismatchIsRejected(): void
+    {
+        $this->assertUploadRejected(
+            ['name' => 'fake.pdf', 'content' => 'Just text'],
+            'The file "fake.pdf" is not an allowed type (allowed: ' . self::ALLOWED . ').'
+        );
+    }
+
+    public function testUploadAboveTheSizeLimitIsRejected(): void
+    {
+        $this->moduleProperties = ['maxFileSize' => 100];
+
+        $this->assertUploadRejected(
+            ['name' => 'big.txt', 'content' => str_repeat('x', 101), 'size' => 1],
+            'The file "big.txt" is larger than 100 B.'
+        );
+    }
+
+    public function testRejectedUploadWithBackIsShownAsFlash(): void
+    {
+        $draft = $this->readyDraft($this->createPeriodItem());
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->postFiles(
+            'version/update',
+            ['back' => 1, 'Version' => ['content' => 'Text']],
+            ['attachments[0]' => $this->sourceFile('script.html', '<html></html>')],
+            ['id' => $draft->id, 'step' => 1]
+        );
+
+        $this->assertRedirectsTo(['version/update', 'id' => $draft->id, 'step' => 1]);
+        $this->assertSame(
+            'The file "script.html" is not an allowed type (allowed: ' . self::ALLOWED . ').',
+            $this->getFlash('error')
+        );
+        $this->assertSame(0, (int)File::find()->where(['version_id' => $draft->id])->count());
+    }
+
+    public function testMainFileUploadIsStoredAndContinues(): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $editor = $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->postFiles(
+            'version/update',
+            ['next' => 1, 'Version' => ['content' => '']],
+            ['mainFiles[]' => [['path' => $this->sourceFile('law.pdf', self::PDF), 'name' => '../../Forest law.pdf']]],
+            ['id' => $draft->id, 'step' => 1]
+        );
+
+        $this->assertRedirectsTo(['version/update', 'id' => $draft->id, 'step' => 2]);
+        $files = File::find()->where(['version_id' => $draft->id])->all();
+        $this->assertCount(1, $files);
+        $file = $files[0];
+        $this->assertSame(File::KIND_MAIN, $file->kind);
+        $this->assertSame('Forest law.pdf', $file->name);
+        $this->assertSame('knowledge-library/' . $item->id . '/' . $file->id . '.pdf', $file->path);
+        $this->assertSame(hash('sha256', self::PDF), $file->content_hash);
+        $this->assertEquals(strlen(self::PDF), $file->size);
+        $this->assertSame('application/pdf', $file->mime_type);
+        $this->assertSame(self::PDF, file_get_contents($this->getStoragePath($file->path)));
+
+        $item = Item::findOne($item->id);
+        $this->assertSame($editor->uuid, $item->source_uploaded_by);
+        $this->assertNotNull($item->source_uploaded_at);
+    }
+
+    public function testAttachmentsAloneAreNoContent(): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->postFiles(
+            'version/update',
+            ['next' => 1, 'Version' => ['content' => ''], 'attachmentTitles' => ['Form A', 'Form B']],
+            ['attachments[]' => [$this->sourceFile('a.txt', 'Alpha text'), $this->sourceFile('b.txt', 'Bravo text')]],
+            ['id' => $draft->id, 'step' => 1]
+        ));
+
+        $this->assertStringContainsString(Html::encode(Version::noContentMessage()), $html);
+        $this->assertStringContainsString('knowledge-library-wizard-blocked', $html);
+        $attachments = Version::findOne($draft->id)->attachments;
+        $this->assertSame(['Form A', 'Form B'], array_map(static fn (File $file) => $file->title, $attachments));
+        $this->assertSame(['a.txt', 'b.txt'], array_map(static fn (File $file) => $file->name, $attachments));
+        $this->assertSame([], Version::findOne($draft->id)->mainFiles);
+        $this->assertNull(Item::findOne($item->id)->source_uploaded_at);
+        $this->assertStringContainsString('> Form A <span', preg_replace('/\s+/', ' ', $html));
+    }
+
+    public function testAttachmentTitlesFollowTheIndexOfTheUpload(): void
+    {
+        $draft = $this->readyDraft($this->createPeriodItem());
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        // The empty title of index 0 belongs to an empty file input.
+        $this->postFiles(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => 'Text'], 'attachmentTitles' => ['', 'Second', ' ']],
+            [
+                'attachments[1]' => $this->sourceFile('b.txt', 'Bravo text'),
+                'attachments[2]' => $this->sourceFile('c.txt', 'Charlie text'),
+            ],
+            ['id' => $draft->id, 'step' => 1]
+        );
+
+        $this->assertRedirectsTo(['item/view', 'id' => $draft->item_id]);
+        $attachments = Version::findOne($draft->id)->attachments;
+        $this->assertSame(['Second', null], array_map(static fn (File $file) => $file->title, $attachments));
+        $this->assertSame(['b.txt', 'c.txt'], array_map(static fn (File $file) => $file->name, $attachments));
+    }
+
+    public function testSecondVersionTakesOverFilesAndRemovalKeepsSharedStorage(): void
+    {
+        $item = $this->createPeriodItem();
+        $first = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+        $this->postFiles(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => 'Text'], 'attachmentTitles' => ['Form']],
+            ['mainFiles[]' => $this->sourceFile('law.pdf', self::PDF), 'attachments[]' => $this->sourceFile('form.txt', 'Form text')],
+            ['id' => $first->id, 'step' => 1]
+        );
+        $this->post('version/publish', [], ['id' => $first->id]);
+        $this->assertSame(Version::STATUS_PUBLISHED, Version::findOne($first->id)->status);
+        $original = File::find()->where(['version_id' => $first->id])->orderBy(['kind' => SORT_DESC])->all();
+        $this->assertCount(2, $original);
+
+        $this->post('version/create', [], ['itemId' => $item->id]);
+        $second = $this->findDraft($item);
+        $copies = File::find()->where(['version_id' => $second->id])->orderBy(['kind' => SORT_DESC])->all();
+        $this->assertCount(2, $copies);
+        foreach ($original as $i => $file) {
+            $this->assertNotSame($file->id, $copies[$i]->id);
+            foreach (['kind', 'path', 'name', 'title', 'mime_type', 'size', 'content_hash'] as $attribute) {
+                $this->assertSame($file->$attribute, $copies[$i]->$attribute, $attribute);
+            }
+        }
+
+        // Taken over files are not highlighted as new uploads.
+        $html = $this->assertPage($this->get('version/update', ['id' => $second->id, 'step' => 1]));
+        $this->assertStringNotContainsString('knowledge-library-wizard-file-new', $html);
+        $this->assertStringNotContainsString('#fffaeb', $html);
+        $this->assertStringContainsString('name="remove[' . $copies[0]->id . ']" value="1"', $html);
+        $this->assertStringNotContainsString('knowledge-library-wizard-duplicate', $html);
+
+        [$main, $attachment] = $copies;
+        $this->post('version/update', ['save' => 1, 'Version' => ['content' => 'Text'], 'remove' => [$main->id => '1', $attachment->id => '0']], ['id' => $second->id, 'step' => 1]);
+
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+        $this->assertNull(File::findOne($main->id));
+        $this->assertNotNull(File::findOne($attachment->id));
+        $this->assertNotNull(File::findOne($original[0]->id));
+        $this->assertFileExists($this->getStoragePath($main->path));
+    }
+
+    public function testRemovingAFileUploadedInTheDraftDeletesTheStoredFile(): void
+    {
+        $item = $this->createPeriodItem();
+        $published = $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $shared = $this->createFile($published, ['path' => 'knowledge-library/' . $item->id . '/shared.pdf']);
+        Yii::$app->get('fs')->write($shared->path, 'shared');
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+        $this->postFiles(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => 'Text']],
+            ['attachments[0]' => $this->sourceFile('new.txt', 'New text')],
+            ['id' => $draft->id, 'step' => 1]
+        );
+        $new = File::find()->where(['version_id' => $draft->id, 'name' => 'new.txt'])->one();
+        $this->assertNotNull($new);
+        $this->assertFileExists($this->getStoragePath($new->path));
+
+        // Only the upload of the draft is highlighted.
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertSame(1, substr_count($html, 'knowledge-library-wizard-file-new'));
+        $this->assertMatchesRegularExpression('#knowledge-library-wizard-file-new"[^>]*background: \#fffaeb[^>]*>\s*<i class="fa fa-paperclip"#', $html);
+
+        // Files of other versions cannot be removed through the draft.
+        $this->post(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => 'Text'], 'remove' => [$new->id => '1', $shared->id => '1']],
+            ['id' => $draft->id, 'step' => 1]
+        );
+
+        $this->assertNull(File::findOne($new->id));
+        $this->assertFileDoesNotExist($this->getStoragePath($new->path));
+        $this->assertNotNull(File::findOne($shared->id));
+        $this->assertFileExists($this->getStoragePath($shared->path));
+    }
+
+    public function testDuplicateAttachmentShowsHintWithLink(): void
+    {
+        $other = $this->createPeriodItem(['title' => 'Service "agreement" <mobile>']);
+        $otherDraft = $this->readyDraft($other);
+        $draft = $this->readyDraft($this->createPeriodItem());
+        $this->loginAs(Module::ROLE_EDITOR);
+        $source = $this->sourceFile('agreement.pdf', self::PDF);
+
+        // The same content twice at the same item gives no hint.
+        $this->postFiles(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => 'Text'], 'attachmentTitles' => ['Agreement & form']],
+            ['mainFiles[]' => $source, 'attachments[0]' => $source],
+            ['id' => $draft->id, 'step' => 1]
+        );
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertStringNotContainsString('knowledge-library-wizard-duplicate', $html);
+
+        $this->postFiles('version/update', ['save' => 1, 'Version' => ['content' => 'Text']], ['attachments[0]' => $source], ['id' => $otherDraft->id, 'step' => 1]);
+
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertSame(1, substr_count($html, 'class="knowledge-library-wizard-duplicate"'));
+        $this->assertStringContainsString(Html::encode('This file is already attached to "Service "agreement" <mobile>".'), $html);
+        $this->assertStringContainsString(
+            '<a class="knowledge-library-wizard-duplicate-create" href="'
+            . Html::encode(Url::to(['/knowledge-library/item/create', 'title' => 'Agreement & form']))
+            . '" style="color: #fff; text-decoration: underline; margin-left: 6px">Create as separate knowledge object</a>',
+            $html
+        );
+
+        // The hint does not block.
+        $this->post('version/update', ['next' => 1, 'Version' => ['content' => 'Text']], ['id' => $draft->id, 'step' => 1]);
+        $this->assertRedirectsTo(['version/update', 'id' => $draft->id, 'step' => 2]);
+        $this->assertSame(1, (int)File::find()->where(['version_id' => $draft->id, 'kind' => File::KIND_ATTACHMENT])->count());
+    }
+
+    public function testFileSectionIsTranslated(): void
+    {
+        Yii::$app->language = 'de';
+        $other = $this->createPeriodItem(['title' => 'Mobile Arbeit']);
+        $otherDraft = $this->readyDraft($other);
+        $draft = $this->readyDraft($this->createPeriodItem());
+        $this->loginAs(Module::ROLE_EDITOR);
+        $source = $this->sourceFile('agreement.pdf', self::PDF);
+        $this->postFiles('version/update', ['save' => 1, 'Version' => ['content' => 'Text']], ['attachments[0]' => $source], ['id' => $otherDraft->id, 'step' => 1]);
+        $this->postFiles('version/update', ['save' => 1, 'Version' => ['content' => 'Text']], ['attachments[0]' => $source], ['id' => $draft->id, 'step' => 1]);
+
+        $html = $this->assertPage($this->postFiles(
+            'version/update',
+            ['next' => 1, 'Version' => ['content' => 'Text']],
+            ['mainFiles[]' => $this->sourceFile('script.html', '<html></html>')],
+            ['id' => $draft->id, 'step' => 1]
+        ));
+
+        foreach ([
+            'Entfernen',
+            'data-kl-label-keep="Behalten"',
+            'Hauptdokumente hinzufügen',
+            'Anhang hinzufügen',
+            'Titel des Anhangs',
+            'Erlaubte Typen: ' . self::ALLOWED . '. Höchstens 20 MB je Datei.',
+            Html::encode('Diese Datei ist bereits an „Mobile Arbeit“ angehängt.'),
+            'Als eigenes Wissensobjekt anlegen',
+            Html::encode('Die Datei „script.html“ ist kein erlaubter Typ (erlaubt: ' . self::ALLOWED . ').'),
+        ] as $text) {
+            $this->assertStringContainsString($text, $html);
+        }
+    }
+
+    /**
+     * Uploads the file as main file with "Next" and asserts that it is
+     * rejected with the message: the step stays, no row, nothing stored.
+     *
+     * @param array{name: string, content: string, size?: int} $upload
+     */
+    private function assertUploadRejected(array $upload, string $message): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $spec = ['path' => $this->sourceFile($upload['name'], $upload['content']), 'name' => $upload['name']];
+        if (isset($upload['size'])) {
+            $spec['size'] = $upload['size'];
+        }
+        $html = $this->assertPage($this->postFiles(
+            'version/update',
+            ['next' => 1, 'Version' => ['content' => 'Text']],
+            ['mainFiles[]' => [$spec]],
+            ['id' => $draft->id, 'step' => 1]
+        ));
+
+        $this->assertMatchesRegularExpression(
+            '#<div class="knowledge-library-wizard-file-error"[^>]*>\s*<i class="fa fa-times-circle"></i> '
+            . preg_quote(Html::encode($message), '#') . '\s*</div>#',
+            $html
+        );
+        // The text is saved, the step does not continue.
+        $this->assertSame('Text', Version::findOne($draft->id)->content);
+        $this->assertSame(0, (int)File::find()->where(['version_id' => $draft->id])->count());
+        $this->assertSame([], FileHelper::findFiles($this->getStorageDir()));
+        $this->assertNull(Item::findOne($item->id)->source_uploaded_at);
+    }
+
+    /**
+     * Writes a source file for an upload into the temporary source directory
+     * of the test and returns its path.
+     */
+    private function sourceFile(string $name, string $content): string
+    {
+        if ($this->sourceDir === null) {
+            $this->sourceDir = sys_get_temp_dir() . '/knowledge-library-test-source-' . bin2hex(random_bytes(8));
+            FileHelper::createDirectory($this->sourceDir);
+        }
+
+        // A directory per file keeps the name as base name of the path.
+        $dir = $this->sourceDir . '/' . bin2hex(random_bytes(4));
+        FileHelper::createDirectory($dir);
+        $path = $dir . '/' . $name;
+        file_put_contents($path, $content);
+
+        return $path;
     }
 
     /**

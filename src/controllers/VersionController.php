@@ -4,6 +4,7 @@ namespace dmstr\knowledgeLibrary\controllers;
 
 use DateTimeImmutable;
 use dmstr\knowledgeLibrary\files\FileService;
+use dmstr\knowledgeLibrary\models\File;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Topic;
 use dmstr\knowledgeLibrary\models\ValidityCheck;
@@ -15,6 +16,7 @@ use yii\helpers\ArrayHelper;
 use yii\web\ForbiddenHttpException;
 use yii\web\NotFoundHttpException;
 use yii\web\Response;
+use yii\web\UploadedFile;
 
 /**
  * Wizard for a new version of a knowledge item: content, validity, details
@@ -41,6 +43,12 @@ class VersionController extends BaseController
     public const BUTTON_NEXT = 'next';
     public const BUTTON_BACK = 'back';
     public const BUTTON_PUBLISH = 'publish';
+
+    /**
+     * Error key of Version under which the step content collects the
+     * messages of rejected uploads.
+     */
+    public const FILES_ERROR_ATTRIBUTE = 'files';
 
     /**
      * Scenario of Version by step; the review step has no fields.
@@ -318,19 +326,110 @@ class VersionController extends BaseController
     }
 
     /**
-     * Saves the step content: the Markdown text (`Version[content]`).
+     * Saves the step content: the Markdown text (`Version[content]`) and the
+     * files of the draft.
      *
-     * Invalid text is not saved; the model keeps the errors.
+     * Files: `remove[<file-id>] = 1` removes a file of the draft (the stored
+     * file only if no other version refers to it), `mainFiles[]` are new
+     * main files, `attachments[<i>]` new attachments with the title
+     * `attachmentTitles[<i>]` of the same index.
+     *
+     * Invalid text is not saved; the model keeps the errors. Rejected uploads
+     * are neither stored nor saved, their messages are added as errors of
+     * `files` (see FILES_ERROR_ATTRIBUTE) and the step counts as not saved,
+     * so "Next" stays on the step; for "Back" they are shown as flash
+     * message.
      */
     protected function saveContentStep(Version $model, array $post): bool
     {
         $model->setScenario(Version::SCENARIO_CONTENT);
         $model->load($post);
-        if (!$model->validate()) {
-            return false;
+        $saved = $model->validate() && $model->save(false);
+
+        $rejected = $this->saveContentFiles($model, $post);
+        foreach ($rejected as $error) {
+            $model->addError(self::FILES_ERROR_ATTRIBUTE, $error);
+        }
+        if ($rejected !== [] && $this->resolveButton($post) === self::BUTTON_BACK) {
+            Yii::$app->getSession()->setFlash('error', implode(' ', $rejected));
         }
 
-        return $model->save(false);
+        return $saved && $rejected === [];
+    }
+
+    /**
+     * Removes the files marked in `remove` and stores the uploads of the
+     * step content.
+     *
+     * @return string[] messages of rejected uploads
+     */
+    private function saveContentFiles(Version $model, array $post): array
+    {
+        $service = new FileService($this->module);
+
+        $remove = isset($post['remove']) && is_array($post['remove']) ? $post['remove'] : [];
+        $removeIds = [];
+        foreach ($remove as $fileId => $flag) {
+            if ((string)$flag === '1') {
+                $removeIds[] = (string)$fileId;
+            }
+        }
+        if ($removeIds !== []) {
+            // Only files of this draft can be removed.
+            foreach (File::find()->where(['version_id' => $model->id, 'id' => $removeIds])->all() as $file) {
+                $service->remove($file);
+            }
+        }
+
+        $uploads = [];
+        foreach (UploadedFile::getInstancesByName('mainFiles') as $upload) {
+            $uploads[] = [$upload, File::KIND_MAIN, null];
+        }
+        $titles = isset($post['attachmentTitles']) && is_array($post['attachmentTitles']) ? $post['attachmentTitles'] : [];
+        foreach (static::uploadsByIndex('attachments') as $index => $upload) {
+            $title = $titles[$index] ?? null;
+            $uploads[] = [$upload, File::KIND_ATTACHMENT, is_string($title) ? $title : null];
+        }
+
+        $rejected = [];
+        foreach ($uploads as [$upload, $kind, $title]) {
+            $file = $service->store($model, $upload, $kind, $title);
+            if ($file->getIsNewRecord()) {
+                $rejected[] = $file->getFirstError('name')
+                    ?? (string)(array_values($file->getFirstErrors())[0] ?? '');
+            }
+        }
+
+        if ($removeIds !== [] || $uploads !== []) {
+            unset($model->files, $model->mainFiles, $model->attachments);
+        }
+
+        return array_values(array_filter($rejected, static fn (string $error) => $error !== ''));
+    }
+
+    /**
+     * Uploaded files of a field `<name>[<index>]` by index, so they can be
+     * matched with inputs of the same index (e.g. attachment titles). Empty
+     * file inputs are skipped.
+     *
+     * @return array<int|string, UploadedFile>
+     */
+    private static function uploadsByIndex(string $name): array
+    {
+        $names = $_FILES[$name]['name'] ?? null;
+        if (!is_array($names)) {
+            return [];
+        }
+
+        $uploads = [];
+        foreach (array_keys($names) as $index) {
+            $upload = UploadedFile::getInstanceByName($name . '[' . $index . ']');
+            if ($upload !== null) {
+                $uploads[$index] = $upload;
+            }
+        }
+
+        return $uploads;
     }
 
     /**

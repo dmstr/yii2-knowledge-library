@@ -11,12 +11,16 @@ use dmstr\knowledgeLibrary\models\Type;
 use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\Module;
 use dmstr\knowledgeLibrary\tests\WebTestCase;
+use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
+use League\Flysystem\UnableToDeleteFile;
 use Yii;
 use yii\base\Event;
 use yii\base\ModelEvent;
 use yii\db\Query;
 use yii\helpers\Html;
 use yii\helpers\Url;
+use yii\log\Logger;
 use yii\web\NotFoundHttpException;
 
 /**
@@ -807,6 +811,72 @@ class ItemControllerTest extends WebTestCase
         $this->assertSame('The knowledge object could not be deleted.', $this->getFlash('error'));
         $this->assertNull($this->getFlash('success'));
         $this->assertNotNull(Item::findOne($item->id));
+    }
+
+    public function testDeleteRemovesStoredFilesOfTheItemOnly(): void
+    {
+        $type = $this->createType(['has_validity_period' => false, 'requires_review' => false]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $other = $this->createItem(['type_id' => $type->id]);
+        $published = $this->createPublishedVersion($item);
+        $shared = $this->createFile($published, ['path' => 'knowledge-library/' . $item->id . '/shared.pdf']);
+        $draft = Version::createDraft($item);
+        $this->assertSame(1, (int)File::find()->where(['version_id' => $draft->id, 'path' => $shared->path])->count());
+        $own = $this->createFile($draft, ['path' => 'knowledge-library/' . $item->id . '/own.pdf']);
+        $foreign = $this->createFile($this->createVersion($other), ['path' => 'knowledge-library/' . $other->id . '/foreign.pdf']);
+        $filesystem = Yii::$app->get('fs');
+        foreach ([$shared, $own, $foreign] as $file) {
+            $filesystem->write($file->path, $file->path);
+        }
+        $this->loginAs(Module::ROLE_ADMIN);
+
+        $this->post('item/delete', [], ['id' => $item->id]);
+
+        $this->assertRedirectsTo(['item/index']);
+        $this->assertNull(Item::findOne($item->id));
+        $this->assertSame(0, $this->countRows('{{%knowledge_library_file}}', ['version_id' => [$published->id, $draft->id]]));
+        $this->assertFileDoesNotExist($this->getStoragePath($shared->path));
+        $this->assertFileDoesNotExist($this->getStoragePath($own->path));
+        $this->assertFileExists($this->getStoragePath($foreign->path));
+        $this->assertNotNull(File::findOne($foreign->id));
+
+        $messages = $this->getLogMessages('knowledge-library');
+        $this->assertCount(1, $messages);
+        $this->assertStringContainsString(
+            'with 2 version(s) and 3 file row(s); stored files: 2 deleted, 0 kept, 0 failed;',
+            $messages[0]
+        );
+        $this->assertSame([], $this->getLogMessages('knowledge-library', Logger::LEVEL_WARNING));
+    }
+
+    public function testStorageErrorOnDeleteKeepsTheDeletionAndLogsAWarning(): void
+    {
+        $item = $this->createItem();
+        $file = $this->createFile($this->createVersion($item), ['path' => 'knowledge-library/' . $item->id . '/broken.pdf']);
+        $adapter = new class ($this->getStorageDir()) extends LocalFilesystemAdapter {
+            public function delete(string $path): void
+            {
+                throw UnableToDeleteFile::atLocation($path, 'broken');
+            }
+        };
+        Yii::$app->set('fs', new Filesystem($adapter));
+        Yii::$app->get('fs')->write($file->path, 'content');
+        $this->loginAs(Module::ROLE_ADMIN);
+
+        $this->post('item/delete', [], ['id' => $item->id]);
+
+        $this->assertRedirectsTo(['item/index']);
+        $this->assertNotNull($this->getFlash('success'));
+        $this->assertNull(Item::findOne($item->id));
+        $this->assertNull(File::findOne($file->id));
+        $this->assertFileExists($this->getStoragePath($file->path));
+
+        $warnings = $this->getLogMessages('knowledge-library', Logger::LEVEL_WARNING);
+        $this->assertCount(1, $warnings);
+        $this->assertStringContainsString($item->id . ' deleted, but 1 stored file(s) could not be deleted', $warnings[0]);
+        $messages = $this->getLogMessages('knowledge-library');
+        $this->assertCount(1, $messages);
+        $this->assertStringContainsString('with 1 version(s) and 1 file row(s); stored files: 0 deleted, 0 kept, 1 failed;', $messages[0]);
     }
 
     public function testDeleteButtonConfirmsWithTitleAndScope(): void

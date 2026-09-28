@@ -2,6 +2,8 @@
 
 namespace dmstr\knowledgeLibrary\controllers;
 
+use dmstr\knowledgeLibrary\files\FileService;
+use dmstr\knowledgeLibrary\models\File;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\ItemState;
 use dmstr\knowledgeLibrary\models\Relation;
@@ -194,9 +196,12 @@ class ItemController extends BaseController
 
     /**
      * Deletes the item with all versions, file entries, relations, history
-     * and topic assignments (cascading foreign keys).
+     * and topic assignments (cascading foreign keys), then the stored files
+     * no other item refers to.
      *
-     * The deletion is logged before, as the numbers are gone afterwards.
+     * The deletion is logged afterwards with the numbers counted before. A
+     * stored file that cannot be deleted does not stop the deletion of the
+     * item; it is logged as warning and counted as failed.
      *
      * @throws NotFoundHttpException
      */
@@ -204,15 +209,14 @@ class ItemController extends BaseController
     {
         $model = $this->findModel($id);
         $session = Yii::$app->getSession();
+        $service = new FileService($this->module);
 
-        Yii::info(sprintf(
-            'Deleting knowledge item %s "%s" with %d version(s), user %s, at %s',
-            $model->id,
-            $model->title,
-            (int)$model->getVersions()->count(),
-            $this->module->getUserProvider()->getCurrentUserReference() ?? '-',
-            date('c')
-        ), 'knowledge-library');
+        $versionCount = (int)$model->getVersions()->count();
+        $fileCount = (int)File::find()
+            ->innerJoinWith('version', false)
+            ->andWhere([Version::tableName() . '.[[item_id]]' => $model->id])
+            ->count();
+        $storagePaths = $service->collectStoragePaths($model);
 
         try {
             $deleted = $model->delete() !== false;
@@ -226,6 +230,29 @@ class ItemController extends BaseController
 
             return $this->redirect(['view', 'id' => $model->id]);
         }
+
+        $storage = $service->deleteStoragePaths($storagePaths);
+        if ($storage['failed'] > 0) {
+            Yii::warning(sprintf(
+                'Knowledge item %s deleted, but %d stored file(s) could not be deleted',
+                $model->id,
+                $storage['failed']
+            ), 'knowledge-library');
+        }
+
+        Yii::info(sprintf(
+            'Deleted knowledge item %s "%s" with %d version(s) and %d file row(s);'
+            . ' stored files: %d deleted, %d kept, %d failed; user %s, at %s',
+            $model->id,
+            $model->title,
+            $versionCount,
+            $fileCount,
+            $storage['deleted'],
+            $storage['kept'],
+            $storage['failed'],
+            $this->module->getUserProvider()->getCurrentUserReference() ?? '-',
+            date('c')
+        ), 'knowledge-library');
 
         $session->setFlash('success', Yii::t('knowledge-library', 'Knowledge object "{title}" deleted.', [
             'title' => Html::encode($model->title),

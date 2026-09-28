@@ -51,7 +51,7 @@ For types **without** a validity period versions have no dates; the published ve
 - [dmstr/yii2-rbac-migration](https://github.com/dmstr/yii2-rbac-migration) for the RBAC setup
 - [dmstr/yii2-web](https://github.com/dmstr/yii2-web) for route-based access control
 - [yiisoft/yii2-bootstrap](https://github.com/yiisoft/yii2-bootstrap) and [kartik-v/yii2-widget-select2](https://github.com/kartik-v/yii2-widget-select2) for the backend views
-- An application component providing a flysystem-based file storage (default ID `fs`)
+- [league/flysystem](https://flysystem.thephpleague.com/) 3 and an application component providing a flysystem filesystem as file storage (default ID `fs`), see [Files](#files)
 
 The default user provider works with the identity and user UUIDs of [2amigos/yii2-usuario](https://github.com/2amigos/yii2-usuario).
 
@@ -87,6 +87,8 @@ return [
             'class' => \dmstr\knowledgeLibrary\Module::class,
             'fileStorage' => 'fs',
             'targetPath' => 'knowledge-library',
+            'allowedExtensions' => ['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'txt', 'jpg', 'jpeg', 'png', 'gif', 'webp'],
+            'maxFileSize' => 20 * 1024 * 1024,
             'userProvider' => null,
         ],
         'knowledge' => [
@@ -101,8 +103,10 @@ return [
 
 | Property | Default | Description |
 | --- | --- | --- |
-| `fileStorage` | `'fs'` | Name of the application component used as (flysystem-based) file storage for version files |
+| `fileStorage` | `'fs'` | Name of the application component used as file storage for version files; the component must implement `League\Flysystem\FilesystemOperator` or provide one through `getFilesystem()` (e.g. `eluhr\flysystemRestApi\components\FileStorage` of eluhr/yii2-flysystem-rest-api), otherwise an `InvalidConfigException` is thrown |
 | `targetPath` | `'knowledge-library'` | Target directory inside the file storage |
+| `allowedExtensions` | `['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'txt', 'jpg', 'jpeg', 'png', 'gif', 'webp']` | File extensions allowed for uploaded version files (lower case, without dot); the MIME type detected from the content must match the extension |
+| `maxFileSize` | `20971520` (20 MB) | Maximum size of an uploaded version file in bytes, checked against the actual file size; the PHP and web server upload limits must allow at least this size |
 | `userProvider` | `null` | Definition of a user provider object (class name, configuration array or object), resolved via `Yii::createObject()`; `null` uses the default provider |
 
 ### Frontend module properties
@@ -131,12 +135,28 @@ The backend module provides the following controllers. Routes are relative to th
 | `topic/create` | Create a topic |
 | `topic/update` | Edit a topic |
 | `topic/delete` | Delete a topic that is not used by any item (POST only) |
+| `version/create` | Start the version wizard of an item: creates its draft or continues the existing one (POST only) |
+| `version/update` | Step of the version wizard (`step` 1 to 4) |
+| `version/publish` | Publish a draft of a type without review (POST only) |
+| `version/discard` | Discard a draft with its files (POST only) |
+| `file/download` | Download a file of a version |
+| `relation/create` | Add a relation from an item to another (POST only) |
+| `relation/delete` | Remove a relation (POST only) |
 
 The views use `yii\bootstrap\ActiveForm` and `yii\grid\GridView` with Bootstrap 3 markup, and the Select2 widget of `kartik-v/yii2-widget-select2`. They set `$this->title` and the breadcrumbs (`$this->params['breadcrumbs']`) and are rendered in the layout configured for the module (`layout` property).
 
+### Version wizard
+
+New versions are created in a wizard that works on the draft of the item (at most one per item). A new draft takes over the text, the files and the details (title, summary, topics) of the latest published version. The wizard has four steps, each saved on its own; "Save as draft" returns to the detail page in every step:
+
+1. **Content**: Markdown text, main files (`mainFiles[]`, several at once) and attachments (`attachments[<i>]` with the title `attachmentTitles[<i>]`). Files of the draft can be removed (`remove[<file-id>]=1`); files uploaded in the draft are highlighted. An attachment whose content is already attached to another item shows a hint with a link to create an item of its own from it; the hint does not block. The step is complete with a text or at least one main file, attachments alone do not count. Rejected uploads are shown with the reason and keep the wizard on the step.
+2. **Validity**: Valid From and Valid Until for types with a validity period, with the consequences for the previous version and a preview of the timeline.
+3. **Details**: title, topics and summary; they are applied to the item when the version is published.
+4. **Check**: summary of the version and "Publish" for types without review.
+
 ### Delete log
 
-Deleting an item is logged with `Yii::info()` in the category `knowledge-library`, including the reference of the current user, the ID and title of the item and the number of deleted versions. Info messages are usually not routed to a log target in production; to keep the entries, the application adds a target for the category:
+Deleting an item is logged with `Yii::info()` in the category `knowledge-library` after the deletion, including the reference of the current user, the ID and title of the item, the number of deleted versions and file rows, and the number of stored files deleted, kept (still referenced) and failed. A stored file that cannot be deleted does not stop the deletion of the item; it is additionally logged with `Yii::warning()`. Info messages are usually not routed to a log target in production; to keep the entries, the application adds a target for the category:
 
 ```php
 'components' => [
@@ -153,7 +173,28 @@ Deleting an item is logged with `Yii::info()` in the category `knowledge-library
 ],
 ```
 
+## Files
+
+Version files are stored in the flysystem filesystem of the component named by `fileStorage` under `<targetPath>/<item-id>/<file-id>.<ext>`, e.g. `knowledge-library/<item-uuid>/<file-uuid>.pdf`. The ID is the UUID of the file row, the extension comes from the original name; the original name (base name only) is kept in the file row together with MIME type, size, position and the SHA-256 hash of the content (`content_hash`). Uploads are read from their temporary file as stream, never loaded into memory as a whole.
+
+Uploads are checked against `allowedExtensions` (also by the MIME type detected from the content) and `maxFileSize`; rejected files write neither a row nor a stored file. Uploading a main file records the upload at the item (`source_uploaded_at`, `source_uploaded_by`, the latest upload wins).
+
+A new version takes over the files of its predecessor as new file rows pointing to the same stored file, the storage is not copied. A stored file is deleted only when no file row refers to it anymore: removing a taken-over file from a draft deletes the row only, removing a file uploaded in the draft deletes the stored file as well. Deleting an item deletes all its stored files.
+
+The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file as download (`Content-Disposition: attachment`) with its original name.
+
 ## Migrations
+
+The package brings the following migrations:
+
+| Migration | Purpose |
+| --- | --- |
+| `m260928_100000_knowledge_library_rbac` | Permissions and roles |
+| `m260928_100100_knowledge_library_schema` | Tables of the data model |
+| `m260928_185500_knowledge_library_routes` | Route permissions of items, types and topics |
+| `m260928_203000_knowledge_library_versions` | Draft details of versions (`draft_title`, `draft_summary`, `draft_topic_ids`) and the content hash of files (`content_hash`) |
+| `m260928_203100_knowledge_library_routes_2` | Route permissions of the version wizard, the file download and the relations |
+| `i18n/m260928_100200_knowledge_library_translations` | Optional German translations, see [Translations](#translations) |
 
 Add the migration path to the migrate controller of your console application:
 
@@ -217,7 +258,7 @@ They are grouped into roles that build on each other: `KnowledgeLibraryAdmin` co
 
 ### Route permissions
 
-Every action of the backend module is checked against a permission named `<module-id>_<controller>_<action>`, e.g. `knowledge-library_item_delete`. The migration `m260928_185500_knowledge_library_routes` creates one permission per action and assigns them to the roles:
+Every action of the backend module is checked against a permission named `<module-id>_<controller>_<action>`, e.g. `knowledge-library_item_delete`. The migrations `m260928_185500_knowledge_library_routes` and `m260928_203100_knowledge_library_routes_2` create one permission per action and assign them to the roles:
 
 | Permission | Role |
 | --- | --- |
@@ -225,8 +266,13 @@ Every action of the backend module is checked against a permission named `<modul
 | `knowledge-library_item_delete` | `KnowledgeLibraryAdmin` |
 | `knowledge-library_type_index`, `knowledge-library_type_create`, `knowledge-library_type_update`, `knowledge-library_type_delete` | `KnowledgeLibraryAdmin` |
 | `knowledge-library_topic_index`, `knowledge-library_topic_create`, `knowledge-library_topic_update`, `knowledge-library_topic_delete` | `KnowledgeLibraryAdmin` |
+| `knowledge-library_version_create`, `knowledge-library_version_update`, `knowledge-library_version_publish`, `knowledge-library_version_discard` | `KnowledgeLibraryEditor` |
+| `knowledge-library_file_download` | `KnowledgeLibraryEditor` |
+| `knowledge-library_relation_create`, `knowledge-library_relation_delete` | `KnowledgeLibraryEditor` |
 
 Reviewers and admins inherit the editor permissions through the role chain. The permission names assume the module ID `knowledge-library`; with another module ID the application creates the permissions itself.
+
+Everyone who may open the detail page of an item may also download its files, including the files of drafts.
 
 `dmstr\web\User` resolves route permissions by prefix: a permission `knowledge-library` grants every route of the module, `knowledge-library_item` every item action including `delete`. The package therefore creates no such permission; applications should not either unless they want to grant everything below it.
 
