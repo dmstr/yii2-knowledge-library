@@ -2,7 +2,6 @@
 
 namespace dmstr\knowledgeLibrary\frontend;
 
-use dmstr\knowledgeLibrary\traits\RegistersTranslationsTrait;
 use dmstr\web\traits\AccessBehaviorTrait;
 
 /**
@@ -14,7 +13,6 @@ use dmstr\web\traits\AccessBehaviorTrait;
 class Module extends \yii\base\Module
 {
     use AccessBehaviorTrait;
-    use RegistersTranslationsTrait;
 
     /**
      * ID of the backend module whose configuration (file storage, user
@@ -25,6 +23,5 @@ class Module extends \yii\base\Module
     public function init()
     {
         parent::init();
-        $this->registerTranslations();
     }
 }

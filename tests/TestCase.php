@@ -10,10 +10,11 @@ use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\users\UserProviderInterface;
 use m260928_100100_knowledge_library_schema;
+use m260928_100200_knowledge_library_translations;
 use Yii;
 use yii\console\Application;
 use yii\db\Connection;
-use yii\i18n\PhpMessageSource;
+use yii\i18n\DbMessageSource;
 
 /**
  * Base test case with a fresh console application and an in-memory SQLite
@@ -22,6 +23,12 @@ use yii\i18n\PhpMessageSource;
 abstract class TestCase extends \PHPUnit\Framework\TestCase
 {
     protected m260928_100100_knowledge_library_schema $schemaMigration;
+
+    /**
+     * Whether setUp() installs the German translations of the package via
+     * the optional i18n migration, as an application would.
+     */
+    protected bool $installTranslations = true;
 
     protected function setUp(): void
     {
@@ -42,9 +49,11 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
                 'i18n' => [
                     'translations' => [
                         'knowledge-library*' => [
-                            'class' => PhpMessageSource::class,
-                            'basePath' => '@dmstr/knowledgeLibrary/messages',
+                            'class' => DbMessageSource::class,
+                            'sourceMessageTable' => '{{%language_source}}',
+                            'messageTable' => '{{%language_translate}}',
                             'sourceLanguage' => 'en',
+                            'enableCaching' => false,
                         ],
                     ],
                 ],
@@ -53,6 +62,11 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
 
         DummyUserProvider::$currentReference = DummyUserProvider::DEFAULT_REFERENCE;
         Yii::$container->setSingleton(UserProviderInterface::class, DummyUserProvider::class);
+
+        $this->createMessageTables();
+        if ($this->installTranslations) {
+            $this->installTranslations();
+        }
 
         require_once dirname(__DIR__) . '/src/migrations/m260928_100100_knowledge_library_schema.php';
         $this->schemaMigration = new m260928_100100_knowledge_library_schema([
@@ -71,6 +85,47 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         Yii::$app = null;
 
         parent::tearDown();
+    }
+
+    /**
+     * Creates the tables of the DbMessageSource serving `knowledge-library`,
+     * like the translation tables of a phd5 application.
+     */
+    protected function createMessageTables(): void
+    {
+        $command = Yii::$app->db->createCommand();
+        $command->createTable('{{%language_source}}', [
+            'id' => 'pk',
+            'category' => 'string(32)',
+            'message' => 'text',
+        ])->execute();
+        $command->createTable('{{%language_translate}}', [
+            'id' => 'integer NOT NULL',
+            'language' => 'string(5) NOT NULL',
+            'translation' => 'text',
+            'PRIMARY KEY (id, language)',
+        ])->execute();
+    }
+
+    /**
+     * Writes the German translations into the message tables.
+     */
+    protected function installTranslations(): void
+    {
+        require_once dirname(__DIR__) . '/src/migrations/i18n/m260928_100200_knowledge_library_translations.php';
+        $migration = new m260928_100200_knowledge_library_translations([
+            'db' => Yii::$app->db,
+            'compact' => true,
+        ]);
+
+        ob_start();
+        try {
+            $result = $migration->up();
+        } finally {
+            $output = ob_get_clean();
+        }
+
+        $this->assertNotFalse($result, "Translation migration failed: $output");
     }
 
     /**

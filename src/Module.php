@@ -2,7 +2,6 @@
 
 namespace dmstr\knowledgeLibrary;
 
-use dmstr\knowledgeLibrary\traits\RegistersTranslationsTrait;
 use dmstr\knowledgeLibrary\users\DefaultUserProvider;
 use dmstr\knowledgeLibrary\users\UserProviderInterface;
 use dmstr\web\traits\AccessBehaviorTrait;
@@ -14,7 +13,6 @@ use Yii;
 class Module extends \yii\base\Module
 {
     use AccessBehaviorTrait;
-    use RegistersTranslationsTrait;
 
     public const PERMISSION_EDITOR = 'knowledge_library_editor';
     public const PERMISSION_REVIEWER = 'knowledge_library_reviewer';
@@ -48,7 +46,6 @@ class Module extends \yii\base\Module
     public function init()
     {
         parent::init();
-        $this->registerTranslations();
 
         if ($this->userProvider !== null && !Yii::$container->has(UserProviderInterface::class)) {
             Yii::$container->setSingleton(UserProviderInterface::class, $this->userProvider);

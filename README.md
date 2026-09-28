@@ -125,22 +125,33 @@ Add the migration path to the migrate controller of your console application:
 
 ## Translations
 
-Messages use the category `knowledge-library`. Both modules register a `PhpMessageSource` for `knowledge-library*` unless the application already configured that category.
+Messages use the category `knowledge-library`. The package registers no message source of its own; the category is served by the message source the application configured for it.
 
-Applications with a catch-all `*` message source (e.g. a `DbMessageSource`) must map `knowledge-library*` explicitly, otherwise the catch-all source takes precedence:
+phd5 applications map `'*'` to a `DbMessageSource` and need no further configuration. The German texts of the package are provided by an optional migration; add its path to the migrate controller next to the schema migrations:
+
+```php
+'controllerMap' => [
+    'migrate' => [
+        'class' => \yii\console\controllers\MigrateController::class,
+        'migrationPath' => [
+            '@vendor/dmstr/yii2-knowledge-library/src/migrations',
+            '@vendor/dmstr/yii2-knowledge-library/src/migrations/i18n',
+        ],
+    ],
+],
+```
+
+The migration writes the source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the package's translations and source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
+
+Applications without a database message source must configure a message source for `knowledge-library*` themselves; providing the translations is then up to the application:
 
 ```php
 'components' => [
     'i18n' => [
         'translations' => [
             'knowledge-library*' => [
-                'class' => \yii\i18n\PhpMessageSource::class,
-                'basePath' => '@dmstr/knowledgeLibrary/messages',
-                'sourceLanguage' => 'en',
-            ],
-            '*' => [
                 'class' => \yii\i18n\DbMessageSource::class,
-                // ...
+                'sourceLanguage' => 'en',
             ],
         ],
     ],
