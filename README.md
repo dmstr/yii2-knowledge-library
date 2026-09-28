@@ -1,5 +1,7 @@
 # yii2-knowledge-library
 
+[![tests](https://github.com/dmstr/yii2-knowledge-library/actions/workflows/tests.yml/badge.svg)](https://github.com/dmstr/yii2-knowledge-library/actions/workflows/tests.yml)
+
 A knowledge library for Yii2 applications. It consists of two modules:
 
 - a **backend module** for managing knowledge items with versioned, time-valid content, review by a second person, relations between items and a change history
@@ -238,6 +240,8 @@ vendor/bin/phpunit
 ```
 
 The suite `unit` tests the models and migrations on an in-memory SQLite database. The suite `web` runs the backend pages through `Yii::$app->runAction()` in a web application (`tests/WebTestCase.php`) with the RBAC migrations of the package applied, so the route permissions are tested as well.
+
+GitHub Actions runs both suites on PHP 8.1 to 8.4 for every push to `master` and every pull request (`.github/workflows/tests.yml`).
 
 ## License
 

@@ -4,6 +4,10 @@
          cacheDirectory=".phpunit.cache"
          failOnWarning="true"
          failOnRisky="true">
+    <php>
+        <!-- Every test builds its own application; the suite needs more than 128M on PHP 8.1. -->
+        <ini name="memory_limit" value="512M"/>
+    </php>
     <testsuites>
         <testsuite name="unit">
             <directory>tests/unit</directory>
