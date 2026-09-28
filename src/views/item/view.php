@@ -15,10 +15,16 @@
  * @var dmstr\knowledgeLibrary\models\Relation[] $outgoing
  * @var dmstr\knowledgeLibrary\models\Relation[] $incoming
  * @var array<string, string> $targetOptions items that can become relation targets
+ * @var dmstr\knowledgeLibrary\models\Version|null $pendingVersion version in review
+ * @var string|null $pendingReviewerName name of the reviewer of the version in review
+ * @var bool $isReviewer whether the current user reviews the version in review
+ * @var bool $canChangeReviewer whether the current user may change the reviewer
+ * @var string|null $returnedByName name of the reviewer who returned the draft, null if not returned
+ * @var dmstr\knowledgeLibrary\models\History[] $history newest first
+ * @var dmstr\knowledgeLibrary\users\UserProviderInterface $userProvider
  */
 
 use dmstr\knowledgeLibrary\models\Item;
-use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\widgets\ValidityTimeline;
 use yii\bootstrap\BootstrapPluginAsset;
 use yii\helpers\Html;
@@ -52,14 +58,8 @@ $tabs = [
     'source' => Yii::t('knowledge-library', 'Source & origin'),
     'history' => Yii::t('knowledge-library', 'History'),
 ];
-$placeholders = [
-    'history' => Yii::t('knowledge-library', 'The change history will be available in a later release.'),
-];
 
-$hasVersionInReview = false;
-foreach ($versions as $version) {
-    $hasVersionInReview = $hasVersionInReview || $version->status === Version::STATUS_IN_REVIEW;
-}
+$hasVersionInReview = $pendingVersion !== null;
 $topicNames = array_map(static fn ($topic) => $topic->name, $model->topics);
 sort($topicNames);
 $timeline = $versions === [] ? '' : ValidityTimeline::widget(['item' => $model]);
@@ -145,6 +145,38 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
         ) ?>
     </div>
     <hr>
+    <?php if ($returnedByName !== null && $draft !== null): ?>
+        <?= $this->render('_return_callout', ['model' => $draft, 'returnedByName' => $returnedByName]) ?>
+    <?php endif ?>
+    <?php if ($pendingVersion !== null): ?>
+        <div class="knowledge-library-pending-callout" style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; background: #f39c12; border-left: 5px solid #c87f0a; color: #fff; border-radius: 3px; padding: 11px 15px; margin-bottom: 14px">
+            <i class="fa fa-hourglass-half"></i>
+            <span style="flex: 1"><?= Html::encode(Yii::t('knowledge-library', 'Version {number} is awaiting approval by {name}.', [
+                'number' => (int)$pendingVersion->number,
+                'name' => $pendingReviewerName,
+            ])) ?></span>
+            <?php if ($canChangeReviewer): ?>
+                <?= Html::a(
+                    Html::encode(Yii::t('knowledge-library', 'Change reviewer')),
+                    ['version/reviewer', 'id' => $pendingVersion->id],
+                    [
+                        'class' => 'btn btn-sm knowledge-library-pending-change-reviewer',
+                        'style' => 'background: transparent; border: 1px solid #fff; color: #fff; font-weight: 600',
+                    ]
+                ) ?>
+            <?php endif ?>
+            <?php if ($isReviewer): ?>
+                <?= Html::a(
+                    Html::encode(Yii::t('knowledge-library', 'Review')),
+                    ['version/review', 'id' => $pendingVersion->id],
+                    [
+                        'class' => 'btn btn-sm knowledge-library-pending-review',
+                        'style' => 'background: #fff; border: 1px solid #fff; color: #c87f0a; font-weight: 600',
+                    ]
+                ) ?>
+            <?php endif ?>
+        </div>
+    <?php endif ?>
     <div class="knowledge-library-item-meta" style="display: flex; flex-wrap: wrap; gap: 6px 26px; color: #777">
         <span class="knowledge-library-item-topics">
             <?= Html::encode(Yii::t('knowledge-library', 'Topics')) ?>
@@ -202,6 +234,8 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
                         'incoming' => $incoming,
                         'targetOptions' => $targetOptions,
                     ]) ?>
+                <?php elseif ($key === 'history'): ?>
+                    <?= $this->render('_tab_history', ['history' => $history, 'userProvider' => $userProvider]) ?>
                 <?php elseif ($key === 'source'): ?>
                     <div class="clearfix" style="margin-bottom: 10px">
                         <?= Html::a(
@@ -245,8 +279,6 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
                         </tr>
                         </tbody>
                     </table>
-                <?php else: ?>
-                    <p class="text-muted knowledge-library-placeholder"><?= Html::encode($placeholders[$key]) ?></p>
                 <?php endif ?>
             </div>
         <?php endforeach ?>

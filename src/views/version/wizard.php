@@ -16,6 +16,10 @@
  * @var string $title title of the wizard
  * @var bool $canPublish whether the draft can be published directly
  * @var array<string, string> $topicOptions map `topic ID => name` (steps details and review)
+ * @var array<string, string> $reviewerOptions map `user reference => name` of the possible reviewers without the current user (review step of types with review)
+ * @var string $reviewer selected reviewer (user reference)
+ * @var string $reviewMessage message to the reviewer
+ * @var string|null $returnedByName name of the reviewer who returned the draft, null if it was not returned
  */
 
 use dmstr\knowledgeLibrary\controllers\VersionController;
@@ -64,6 +68,10 @@ JS, View::POS_READY, 'knowledge-library-version-wizard');
         <span class="knowledge-library-wizard-item" style="color: #777"><?= Html::encode($item->title) ?></span>
     </div>
 
+    <?php if ($returnedByName !== null): ?>
+        <?= $this->render('/item/_return_callout', ['model' => $model, 'returnedByName' => $returnedByName]) ?>
+    <?php endif ?>
+
     <?= $this->render('_steps', [
         'model' => $model,
         'step' => $step,
@@ -98,6 +106,9 @@ JS, View::POS_READY, 'knowledge-library-version-wizard');
             'check' => $check,
             'canPublish' => $canPublish,
             'topicOptions' => $topicOptions,
+            'reviewerOptions' => $reviewerOptions,
+            'reviewer' => $reviewer,
+            'reviewMessage' => $reviewMessage,
         ]) ?>
     </div>
 
@@ -142,6 +153,13 @@ JS, View::POS_READY, 'knowledge-library-version-wizard');
                 'class' => 'btn knowledge-library-wizard-publish',
                 'style' => $primaryStyle,
                 'data-confirm' => VersionController::publishConfirmation($model, $check),
+            ]) ?>
+        <?php else: ?>
+            <?= Html::submitButton(Html::encode(Yii::t('knowledge-library', 'Submit for approval')), [
+                'name' => VersionController::BUTTON_SUBMIT,
+                'value' => '1',
+                'class' => 'btn knowledge-library-wizard-submit',
+                'style' => $primaryStyle,
             ]) ?>
         <?php endif ?>
     </div>

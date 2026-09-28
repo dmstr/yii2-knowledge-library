@@ -2,8 +2,10 @@
 
 namespace dmstr\knowledgeLibrary\controllers;
 
+use dmstr\knowledgeLibrary\models\History;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Relation;
+use Throwable;
 use Yii;
 use yii\web\NotFoundHttpException;
 use yii\web\Response;
@@ -11,6 +13,11 @@ use yii\web\Response;
 /**
  * Adds and removes relations of a knowledge item; both return to the tab
  * relations of the detail page.
+ *
+ * Both write a history entry (`relation_added`, `relation_removed`) for
+ * the source item (seen forward, with the title of the target) and for the
+ * target item (seen inverse, with the title of the source), in the same
+ * transaction.
  */
 class RelationController extends BaseController
 {
@@ -46,9 +53,12 @@ class RelationController extends BaseController
             ? $data['target_item_id']
             : null;
         $relation->source_item_id = $item->id;
+        $relation->populateRelation('sourceItem', $item);
 
         $session = Yii::$app->getSession();
-        if ($relation->save()) {
+        if (!$relation->validate()) {
+            $session->setFlash('error', implode(' ', $relation->getFirstErrors()));
+        } elseif ($this->changeWithHistory($relation, History::ACTION_RELATION_ADDED, static fn () => $relation->save(false))) {
             $session->setFlash('success', Yii::t('knowledge-library', 'Relation added.'));
         } else {
             $session->setFlash('error', implode(' ', $relation->getFirstErrors()));
@@ -70,12 +80,55 @@ class RelationController extends BaseController
         }
 
         $session = Yii::$app->getSession();
-        if ($relation->delete() !== false) {
+        if ($this->changeWithHistory($relation, History::ACTION_RELATION_REMOVED, static fn () => $relation->delete() !== false)) {
             $session->setFlash('success', Yii::t('knowledge-library', 'Relation removed.'));
         } else {
             $session->setFlash('error', Yii::t('knowledge-library', 'The relation could not be removed.'));
         }
 
         return $this->redirect(['item/view', 'id' => $relation->source_item_id, 'tab' => ItemController::TAB_RELATIONS]);
+    }
+
+    /**
+     * Runs the change (save or delete) and writes the history entries of
+     * both items in one transaction.
+     *
+     * @param callable(): bool $change
+     */
+    private function changeWithHistory(Relation $relation, string $action, callable $change): bool
+    {
+        $source = $relation->sourceItem;
+        $target = $relation->targetItem;
+
+        $transaction = Relation::getDb()->beginTransaction();
+        try {
+            if (!$change()) {
+                $transaction->rollBack();
+
+                return false;
+            }
+            if ($source instanceof Item) {
+                History::log($source, $action, null, null, [
+                    'relation' => $relation->type,
+                    'direction' => 'forward',
+                    'target' => $target instanceof Item ? $target->title : null,
+                ]);
+            }
+            if ($target instanceof Item) {
+                History::log($target, $action, null, null, [
+                    'relation' => $relation->type,
+                    'direction' => 'inverse',
+                    'target' => $source instanceof Item ? $source->title : null,
+                ]);
+            }
+            $transaction->commit();
+        } catch (Throwable $e) {
+            $transaction->rollBack();
+            Yii::warning("Relation $relation->id not changed: {$e->getMessage()}", 'knowledge-library');
+
+            return false;
+        }
+
+        return true;
     }
 }

@@ -12,6 +12,8 @@
  * @var array<string, string> $typeOptions
  * @var array<string, string> $topicOptions
  * @var bool $isEmpty
+ * @var bool $showAwaitingReview whether the link "Awaiting my approval" is shown
+ * @var int $awaitingReviewCount number of items with a version in review by the current user
  */
 
 use dmstr\knowledgeLibrary\models\Item;
@@ -66,6 +68,27 @@ $sort = $dataProvider->getSort();
         ['class' => 'btn btn-success']
     ) ?>
     <hr>
+
+    <?php if ($showAwaitingReview): ?>
+        <?php $reviewActive = $searchModel->review === ItemSearch::REVIEW_MINE ?>
+        <div class="knowledge-library-awaiting-review" style="margin-bottom: 12px">
+            <?= Html::a(
+                '<i class="fa fa-hourglass-half"></i> ' . Html::encode(Yii::t(
+                    'knowledge-library',
+                    'Awaiting my approval ({count})',
+                    ['count' => $awaitingReviewCount]
+                )),
+                $reviewActive
+                    ? ['index']
+                    : ['index', $searchModel->formName() => ['review' => ItemSearch::REVIEW_MINE]],
+                [
+                    'class' => 'btn btn-sm knowledge-library-awaiting-review-link'
+                        . ($reviewActive ? ' btn-warning active' : ' btn-default'),
+                    'aria-pressed' => $reviewActive ? 'true' : 'false',
+                ]
+            ) ?>
+        </div>
+    <?php endif ?>
 
     <?php if ($isEmpty): ?>
         <div class="callout callout-info">

@@ -5,6 +5,7 @@ namespace dmstr\knowledgeLibrary\tests\web;
 use DateTimeImmutable;
 use dmstr\knowledgeLibrary\controllers\VersionController;
 use dmstr\knowledgeLibrary\models\File;
+use dmstr\knowledgeLibrary\models\History;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\ValidityCheck;
 use dmstr\knowledgeLibrary\models\Version;
@@ -1106,6 +1107,66 @@ class VersionControllerTest extends WebTestCase
         ] as $text) {
             $this->assertStringContainsString($text, $html);
         }
+    }
+
+    public function testOnlySaveAsDraftWritesHistory(): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $editor = $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('version/update', ['next' => 1, 'Version' => ['content' => 'Text']], ['id' => $draft->id, 'step' => 1]);
+        $this->post('version/update', ['back' => 1, 'Version' => ['valid_from' => '2099-01-01']], ['id' => $draft->id, 'step' => 2]);
+        $this->assertSame(0, (int)History::find()->where(['item_id' => $item->id])->count());
+
+        // Invalid input is not saved and not logged.
+        $this->post('version/update', ['save' => 1, 'Version' => ['valid_from' => 'bogus']], ['id' => $draft->id, 'step' => 2]);
+        $this->assertSame(0, (int)History::find()->where(['item_id' => $item->id])->count());
+
+        $this->post('version/update', ['save' => 1, 'Version' => ['valid_from' => '2099-01-01']], ['id' => $draft->id, 'step' => 2]);
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+
+        $entries = History::find()->where(['item_id' => $item->id])->all();
+        $this->assertCount(1, $entries);
+        $this->assertSame(History::ACTION_DRAFT_SAVED, $entries[0]->action);
+        $this->assertSame($draft->id, $entries[0]->version_id);
+        $this->assertSame($editor->uuid, $entries[0]->actor_id);
+        $this->assertSame(['number' => 1], $entries[0]->getDetails());
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'history']));
+        $this->assertStringContainsString('<td class="knowledge-library-history-what">Version 1 saved as draft</td>', $html);
+        $this->assertStringContainsString('<td class="knowledge-library-history-who">User ' . $editor->uuid . '</td>', $html);
+        $this->assertStringContainsString('<td class="knowledge-library-history-reason" style="color: #555">–</td>', $html);
+    }
+
+    public function testDiscardWritesHistoryThatSurvivesTheDraft(): void
+    {
+        $item = $this->createPeriodItem();
+        $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('version/discard', [], ['id' => $draft->id]);
+
+        $entry = History::findOne(['item_id' => $item->id, 'action' => History::ACTION_DRAFT_DISCARDED]);
+        $this->assertNotNull($entry);
+        $this->assertNull($entry->version_id);
+        $this->assertSame(['number' => 2], $entry->getDetails());
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'history']));
+        $this->assertStringContainsString('Draft of version 2 discarded', $html);
+    }
+
+    public function testNewVersionRoutesRequirePostAndReviewPagesGet(): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_ADMIN);
+
+        $this->assertMethodNotAllowed('GET', 'version/approve', ['id' => $draft->id]);
+        $this->assertMethodNotAllowed('GET', 'version/return', ['id' => $draft->id]);
+        $this->assertMethodNotAllowed('POST', 'version/review', ['id' => $draft->id]);
+        $this->assertSame(Version::STATUS_DRAFT, Version::findOne($draft->id)->status);
     }
 
     /**

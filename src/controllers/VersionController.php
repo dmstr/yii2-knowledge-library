@@ -5,6 +5,7 @@ namespace dmstr\knowledgeLibrary\controllers;
 use DateTimeImmutable;
 use dmstr\knowledgeLibrary\files\FileService;
 use dmstr\knowledgeLibrary\models\File;
+use dmstr\knowledgeLibrary\models\History;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Topic;
 use dmstr\knowledgeLibrary\models\ValidityCheck;
@@ -43,6 +44,13 @@ class VersionController extends BaseController
     public const BUTTON_NEXT = 'next';
     public const BUTTON_BACK = 'back';
     public const BUTTON_PUBLISH = 'publish';
+    public const BUTTON_SUBMIT = 'submit';
+
+    /**
+     * Fields of the review step for submitting a draft for approval.
+     */
+    public const FIELD_REVIEWER = 'reviewer';
+    public const FIELD_MESSAGE = 'message';
 
     /**
      * Error key of Version under which the step content collects the
@@ -66,6 +74,10 @@ class VersionController extends BaseController
             'update' => ['GET', 'POST'],
             'publish' => ['POST'],
             'discard' => ['POST'],
+            'review' => ['GET'],
+            'approve' => ['POST'],
+            'return' => ['POST'],
+            'reviewer' => ['GET', 'POST'],
         ]);
     }
 
@@ -84,7 +96,8 @@ class VersionController extends BaseController
 
     /**
      * Starts the wizard: creates the draft of the item or continues the
-     * existing one.
+     * existing one. Not possible for archived items or while a version of the
+     * item is in review (flash message on the detail page).
      *
      * @throws NotFoundHttpException
      */
@@ -92,6 +105,10 @@ class VersionController extends BaseController
     {
         $item = $this->findItem($itemId);
         $session = Yii::$app->getSession();
+
+        if ($item->is_archived) {
+            return $this->redirectArchived($item);
+        }
 
         $existing = Version::find()
             ->forItem($item->id)
@@ -119,10 +136,13 @@ class VersionController extends BaseController
      * POST buttons: `save` saves the step and returns to the detail page,
      * `next` saves and continues if the step is complete, `back` returns to
      * the previous step (saving only valid input), `publish` publishes in the
-     * review step.
+     * review step. `submit` submits the draft for approval in the review step
+     * (types with review only), with the fields `reviewer` (user reference)
+     * and `message` (optional).
      *
      * A step whose preceding steps are incomplete (e.g. a manipulated URL)
-     * redirects to the first incomplete step with its message.
+     * redirects to the first incomplete step with its message. Drafts of
+     * archived items cannot be edited.
      *
      * @return string|Response
      * @throws NotFoundHttpException
@@ -131,6 +151,9 @@ class VersionController extends BaseController
     public function actionUpdate(string $id, $step = self::STEP_CONTENT)
     {
         $model = $this->findDraft($id);
+        if ($model->item->is_archived) {
+            return $this->redirectArchived($model->item);
+        }
         $step = static::normalizeStep($step);
 
         $blocking = $this->findIncompleteStep($model, $step - 1);
@@ -149,6 +172,15 @@ class VersionController extends BaseController
                 return $this->publishDraft($model);
             }
 
+            if ($button === self::BUTTON_SUBMIT && $step === self::STEP_REVIEW) {
+                $result = $this->submitDraft($model, $post);
+                if ($result instanceof Response) {
+                    return $result;
+                }
+
+                return $this->renderWizard($model, $step, null, $result);
+            }
+
             $saved = $this->saveStep($model, $step, $post);
 
             if ($button === self::BUTTON_BACK) {
@@ -156,6 +188,7 @@ class VersionController extends BaseController
             }
 
             if ($saved && $button === self::BUTTON_SAVE) {
+                History::log($model->item, History::ACTION_DRAFT_SAVED, $model);
                 Yii::$app->getSession()->setFlash('success', Yii::t('knowledge-library', 'Draft saved.'));
 
                 return $this->redirect(['item/view', 'id' => $model->item_id]);
@@ -181,6 +214,9 @@ class VersionController extends BaseController
     public function actionPublish(string $id): Response
     {
         $model = $this->findDraft($id);
+        if ($model->item->is_archived) {
+            return $this->redirectArchived($model->item);
+        }
 
         $blocking = $this->findIncompleteStep($model, self::STEP_REVIEW - 1);
         if ($blocking !== null) {
@@ -194,7 +230,9 @@ class VersionController extends BaseController
 
     /**
      * Deletes the draft with its files; stored files no other version refers
-     * to are deleted as well.
+     * to are deleted as well. Writes the history entry `draft_discarded` with
+     * the number of the draft (the entry keeps no reference to the deleted
+     * version).
      *
      * @throws NotFoundHttpException
      */
@@ -215,12 +253,137 @@ class VersionController extends BaseController
         }
 
         if ($deleted) {
+            History::log($model->item, History::ACTION_DRAFT_DISCARDED, null, null, [
+                'number' => (int)$model->number,
+            ]);
             $session->setFlash('success', Yii::t('knowledge-library', 'Draft discarded.'));
         } else {
             $session->setFlash('error', Yii::t('knowledge-library', 'The draft could not be discarded.'));
         }
 
         return $this->redirect(['item/view', 'id' => $model->item_id]);
+    }
+
+    /**
+     * Review page of a version in review: message of the submitter, validity,
+     * consequences, topics, text and files, with the forms to return or to
+     * approve the version. Only for the reviewer of the version.
+     *
+     * @throws NotFoundHttpException
+     * @throws ForbiddenHttpException if the current user is not the reviewer
+     */
+    public function actionReview(string $id): string
+    {
+        $model = $this->findInReview($id);
+        if (!$this->isReviewer($model)) {
+            throw new ForbiddenHttpException(
+                Yii::t('knowledge-library', 'You are not the reviewer of this version.')
+            );
+        }
+
+        $topicIds = $model->draft_title === null ? $model->item->getTopicIds() : $model->getDraftTopicIds();
+
+        return $this->render('review', [
+            'model' => $model,
+            'item' => $model->item,
+            'check' => new ValidityCheck($model),
+            'topics' => $topicIds === []
+                ? []
+                : Topic::find()->andWhere(['id' => $topicIds])->orderedByName()->select('name')->column(),
+            'requestedByName' => $this->userName($model->review_requested_by),
+        ]);
+    }
+
+    /**
+     * Approves and publishes a version in review (body `note`, optional); only
+     * the reviewer may approve, see Version::approve(). Not possible for
+     * archived items.
+     *
+     * @throws NotFoundHttpException
+     */
+    public function actionApprove(string $id): Response
+    {
+        $model = $this->findInReview($id);
+        if ($model->item->is_archived) {
+            return $this->redirectArchived($model->item);
+        }
+
+        $session = Yii::$app->getSession();
+        if (!$model->approve($this->postString('note'))) {
+            $session->setFlash('error', implode(' ', $model->getFirstErrors()));
+
+            return $this->redirectAfterReviewError($model);
+        }
+
+        $session->setFlash('success', Yii::t('knowledge-library', 'Version {number} approved and published.', [
+            'number' => (int)$model->number,
+        ]));
+
+        return $this->redirect(['item/view', 'id' => $model->item_id, 'tab' => ItemController::TAB_VERSIONS]);
+    }
+
+    /**
+     * Returns a version in review to its submitter as draft (body `note`,
+     * required); only the reviewer may return it, see Version::returnToDraft().
+     *
+     * @throws NotFoundHttpException
+     */
+    public function actionReturn(string $id): Response
+    {
+        $model = $this->findInReview($id);
+        $session = Yii::$app->getSession();
+
+        if (!$model->returnToDraft($this->postString('note'))) {
+            $session->setFlash('error', implode(' ', $model->getFirstErrors()));
+
+            return $this->redirectAfterReviewError($model);
+        }
+
+        $session->setFlash('success', Yii::t('knowledge-library', 'Version {number} returned to {name}.', [
+            'number' => (int)$model->number,
+            'name' => $this->userName($model->review_requested_by),
+        ]));
+
+        return $this->redirect(['item/view', 'id' => $model->item_id]);
+    }
+
+    /**
+     * Renders (GET) or saves (POST) the change of the reviewer of a version in
+     * review: body `reviewer` (user reference) and `reason` (optional), see
+     * Version::changeReviewer().
+     *
+     * @return string|Response
+     * @throws NotFoundHttpException
+     */
+    public function actionReviewer(string $id)
+    {
+        $model = $this->findInReview($id);
+        $reviewer = '';
+        $reason = '';
+
+        if ($this->request->getIsPost()) {
+            $reviewer = $this->postString('reviewer');
+            $reason = $this->postString('reason');
+            if ($model->changeReviewer($reviewer, $reason)) {
+                Yii::$app->getSession()->setFlash('success', Yii::t('knowledge-library', 'Review handed over to {name}.', [
+                    'name' => $this->userName($model->reviewer_id),
+                ]));
+
+                return $this->redirect(['item/view', 'id' => $model->item_id]);
+            }
+        }
+
+        $options = $this->module->getUserProvider()->getReviewerOptions();
+        unset($options[(string)$model->reviewer_id], $options[(string)$model->review_requested_by]);
+
+        return $this->render('reviewer', [
+            'model' => $model,
+            'item' => $model->item,
+            'reviewerName' => $this->userName($model->reviewer_id),
+            'reviewerOptions' => $options,
+            'reviewer' => $reviewer,
+            'reason' => $reason,
+        ]);
     }
 
     /**
@@ -499,12 +662,57 @@ class VersionController extends BaseController
         return $this->redirect(['item/view', 'id' => $model->item_id, 'tab' => 'versions']);
     }
 
-    private function renderWizard(Version $model, int $step, ?string $message): string
+    /**
+     * Submits the draft for approval with the fields of the review step.
+     *
+     * @return Response|array{reviewer: string, message: string} the redirect
+     * after submitting, else the entered values for rendering the step again
+     * (the model carries the errors)
+     * @throws ForbiddenHttpException for types without review
+     */
+    private function submitDraft(Version $model, array $post)
+    {
+        if (static::canPublishDirectly($model)) {
+            throw new ForbiddenHttpException(
+                Yii::t('knowledge-library', 'This version can be published without review.')
+            );
+        }
+
+        $reviewer = $post[self::FIELD_REVIEWER] ?? null;
+        $reviewer = is_string($reviewer) ? $reviewer : '';
+        $message = $post[self::FIELD_MESSAGE] ?? null;
+        $message = is_string($message) ? $message : '';
+
+        if (!$model->submitForReview($reviewer, $message)) {
+            return ['reviewer' => $reviewer, 'message' => $message];
+        }
+
+        Yii::$app->getSession()->setFlash('success', Yii::t('knowledge-library', 'Version {number} submitted for approval.', [
+            'number' => (int)$model->number,
+        ]));
+
+        return $this->redirect(['item/view', 'id' => $model->item_id, 'tab' => ItemController::TAB_VERSIONS]);
+    }
+
+    /**
+     * @param array{reviewer: string, message: string}|null $submit values
+     * entered for submitting, null to prefill from the draft
+     */
+    private function renderWizard(Version $model, int $step, ?string $message, ?array $submit = null): string
     {
         $reachable = self::STEP_REVIEW;
         $incomplete = $this->findIncompleteStep($model, self::STEP_DETAILS);
         if ($incomplete !== null) {
             $reachable = $incomplete['step'];
+        }
+
+        $canPublish = static::canPublishDirectly($model);
+        $reviewerOptions = [];
+        if ($step === self::STEP_REVIEW && !$canPublish) {
+            $users = $this->module->getUserProvider();
+            $reviewerOptions = $users->getReviewerOptions();
+            // Four-eyes principle: nobody reviews their own version.
+            unset($reviewerOptions[(string)$users->getCurrentUserReference()]);
         }
 
         return $this->render('wizard', [
@@ -517,7 +725,13 @@ class VersionController extends BaseController
             'blocked' => $step < self::STEP_REVIEW && $this->stepMessage($model, $step) !== null,
             'check' => $step === self::STEP_VALIDITY || $step === self::STEP_REVIEW ? new ValidityCheck($model) : null,
             'title' => static::wizardTitle($model),
-            'canPublish' => static::canPublishDirectly($model),
+            'canPublish' => $canPublish,
+            'reviewerOptions' => $reviewerOptions,
+            'reviewer' => $submit['reviewer'] ?? (string)$model->reviewer_id,
+            'reviewMessage' => $submit['message'] ?? (string)$model->review_message,
+            'returnedByName' => $model->return_note === null || $model->return_note === ''
+                ? null
+                : $this->userName($model->returned_by),
             'topicOptions' => $step === self::STEP_DETAILS || $step === self::STEP_REVIEW
                 ? ArrayHelper::map(Topic::find()->orderedByName()->all(), 'id', 'name')
                 : [],
@@ -544,7 +758,7 @@ class VersionController extends BaseController
 
     private function resolveButton(array $post): string
     {
-        foreach ([self::BUTTON_PUBLISH, self::BUTTON_SAVE, self::BUTTON_BACK] as $button) {
+        foreach ([self::BUTTON_PUBLISH, self::BUTTON_SUBMIT, self::BUTTON_SAVE, self::BUTTON_BACK] as $button) {
             if (isset($post[$button])) {
                 return $button;
             }
@@ -584,6 +798,81 @@ class VersionController extends BaseController
         }
 
         return $model;
+    }
+
+    /**
+     * Finds a version in review with its item.
+     *
+     * @throws NotFoundHttpException
+     */
+    private function findInReview(string $id): Version
+    {
+        $model = Version::find()
+            ->andWhere([Version::tableName() . '.[[id]]' => $id])
+            ->andWhere([Version::tableName() . '.[[status]]' => Version::STATUS_IN_REVIEW])
+            ->with('item.type')
+            ->one();
+        if ($model === null || $model->item === null) {
+            throw new NotFoundHttpException(
+                Yii::t('knowledge-library', 'The requested version in review does not exist.')
+            );
+        }
+
+        return $model;
+    }
+
+    /**
+     * Whether the current user is the reviewer of the version.
+     */
+    private function isReviewer(Version $model): bool
+    {
+        $current = $this->module->getUserProvider()->getCurrentUserReference();
+
+        return $current !== null && $current !== '' && $current === $model->reviewer_id;
+    }
+
+    /**
+     * After a failed approval or return: back to the review page for the
+     * reviewer, to the detail page for everybody else.
+     */
+    private function redirectAfterReviewError(Version $model): Response
+    {
+        return $this->isReviewer($model)
+            ? $this->redirect(['review', 'id' => $model->id])
+            : $this->redirect(['item/view', 'id' => $model->item_id]);
+    }
+
+    /**
+     * Flash "archived" and redirect to the detail page of the item.
+     */
+    private function redirectArchived(Item $item): Response
+    {
+        Yii::$app->getSession()->setFlash('error', Item::archivedMessage());
+
+        return $this->redirect(['item/view', 'id' => $item->id]);
+    }
+
+    /**
+     * Body parameter as string, empty if missing or not a string.
+     */
+    private function postString(string $name): string
+    {
+        $value = $this->request->post($name);
+
+        return is_string($value) ? $value : '';
+    }
+
+    /**
+     * Display name of the user reference, the reference itself if unknown,
+     * "–" without reference.
+     */
+    private function userName(?string $reference): string
+    {
+        if ($reference === null || $reference === '') {
+            return '–';
+        }
+
+        return $this->module->getUserProvider()->getDisplayName($reference) ?? $reference;
     }
 
     /**

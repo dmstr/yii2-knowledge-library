@@ -4,6 +4,7 @@ namespace dmstr\knowledgeLibrary\controllers;
 
 use dmstr\knowledgeLibrary\files\FileService;
 use dmstr\knowledgeLibrary\models\File;
+use dmstr\knowledgeLibrary\models\History;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\ItemState;
 use dmstr\knowledgeLibrary\models\Relation;
@@ -12,6 +13,7 @@ use dmstr\knowledgeLibrary\models\Topic;
 use dmstr\knowledgeLibrary\models\Type;
 use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\Module;
+use Throwable;
 use Yii;
 use yii\db\Exception as DbException;
 use yii\helpers\ArrayHelper;
@@ -45,7 +47,23 @@ class ItemController extends BaseController
     ];
 
     /**
+     * Master data attributes; a change writes the history entry
+     * `master_data_changed`.
+     */
+    private const MASTER_DATA_ATTRIBUTES = ['title', 'type_id'];
+
+    /**
+     * Source attributes; a change writes the history entry `source_changed`.
+     */
+    private const SOURCE_ATTRIBUTES = ['source_name', 'source_reference', 'source_url', 'source_import_mode'];
+
+    /**
      * Lists the items with filters, sorting and the state of each item.
+     *
+     * The link "Awaiting my approval" filters the items with a version in
+     * review by the current user (`ItemSearch[review]=mine`); it shows the
+     * number of these (not archived) items and is offered to users who may
+     * review and whenever the filter is active.
      */
     public function actionIndex(): string
     {
@@ -64,6 +82,8 @@ class ItemController extends BaseController
             'typeOptions' => $this->typeOptions(),
             'topicOptions' => ArrayHelper::map(Topic::find()->orderedByName()->all(), 'id', 'name'),
             'isEmpty' => $isEmpty,
+            'showAwaitingReview' => $searchModel->review === ItemSearch::REVIEW_MINE || $this->canRoute('version', 'review'),
+            'awaitingReviewCount' => $this->countAwaitingReview(),
         ]);
     }
 
@@ -76,7 +96,7 @@ class ItemController extends BaseController
         // SQLite reports the default of nullable columns as the string 'NULL'.
         $model = new Item(['scenario' => Item::SCENARIO_CREATE]);
 
-        if ($model->load($this->request->post()) && $model->save()) {
+        if ($model->load($this->request->post()) && $model->validate() && $this->saveWithHistory($model, History::ACTION_CREATED)) {
             Yii::$app->getSession()->setFlash('success', Yii::t('knowledge-library', 'Knowledge object created.'));
 
             return $this->redirect(['view', 'id' => $model->id]);
@@ -102,6 +122,10 @@ class ItemController extends BaseController
      * the number of the version shown in the tab content; without or with an
      * unknown number the version valid today is shown, else the highest.
      *
+     * The header shows the version in review (with "Change reviewer" for
+     * admins and "Review" for its reviewer) and the note of a returned draft;
+     * the tab history lists the history entries, newest first.
+     *
      * @param string|null $version number of the version shown in the tab content
      * @param string|null $tab active tab
      * @throws NotFoundHttpException
@@ -120,6 +144,15 @@ class ItemController extends BaseController
             $entry->populateRelation('item', $model);
         }
         $draft = $model->getVersions()->andWhere(['status' => Version::STATUS_DRAFT])->one();
+        $pendingVersion = null;
+        foreach ($versions as $entry) {
+            if ($entry->status === Version::STATUS_IN_REVIEW) {
+                $pendingVersion = $entry;
+                break;
+            }
+        }
+        $users = $this->module->getUserProvider();
+        $currentUser = $users->getCurrentUserReference();
 
         $outgoing = $model->getOutgoingRelations()->with('targetItem')->all();
         $incoming = $model->getIncomingRelations()->with('sourceItem')->all();
@@ -130,7 +163,17 @@ class ItemController extends BaseController
             'canDelete' => $this->canDelete(),
             'uploadedByName' => $uploadedBy === null || $uploadedBy === ''
                 ? null
-                : ($this->module->getUserProvider()->getDisplayName($uploadedBy) ?? $uploadedBy),
+                : ($users->getDisplayName($uploadedBy) ?? $uploadedBy),
+            'pendingVersion' => $pendingVersion,
+            'pendingReviewerName' => $pendingVersion === null ? null : $this->userName($pendingVersion->reviewer_id),
+            'isReviewer' => $pendingVersion !== null && $currentUser !== null && $currentUser !== ''
+                && $currentUser === $pendingVersion->reviewer_id,
+            'canChangeReviewer' => $pendingVersion !== null && $this->canRoute('version', 'reviewer'),
+            'returnedByName' => $draft === null || $draft->return_note === null || $draft->return_note === ''
+                ? null
+                : $this->userName($draft->returned_by),
+            'history' => $model->getHistory()->with('version')->all(),
+            'userProvider' => $users,
             'activeTab' => is_string($tab) && in_array($tab, self::TABS, true) ? $tab : self::TAB_VERSIONS,
             'versions' => $versions,
             'draft' => $draft,
@@ -160,7 +203,10 @@ class ItemController extends BaseController
         $model = $this->findModel($id);
         $model->setScenario(Item::SCENARIO_UPDATE);
 
-        if ($model->load($this->request->post()) && $model->save()) {
+        if ($model->load($this->request->post()) && $model->validate() && $this->saveWithHistory(
+            $model,
+            $this->hasChanged($model, self::MASTER_DATA_ATTRIBUTES) ? History::ACTION_MASTER_DATA_CHANGED : null
+        )) {
             Yii::$app->getSession()->setFlash('success', Yii::t('knowledge-library', 'Knowledge object saved.'));
 
             return $this->redirect(['view', 'id' => $model->id]);
@@ -183,7 +229,10 @@ class ItemController extends BaseController
         $model = $this->findModel($id);
         $model->setScenario(Item::SCENARIO_SOURCE);
 
-        if ($model->load($this->request->post()) && $model->save()) {
+        if ($model->load($this->request->post()) && $model->validate() && $this->saveWithHistory(
+            $model,
+            $this->hasChanged($model, self::SOURCE_ATTRIBUTES) ? History::ACTION_SOURCE_CHANGED : null
+        )) {
             Yii::$app->getSession()->setFlash('success', Yii::t('knowledge-library', 'Source & origin saved.'));
 
             return $this->redirect(['view', 'id' => $model->id]);
@@ -296,9 +345,95 @@ class ItemController extends BaseController
      */
     public function canDelete(): bool
     {
-        $permission = str_replace('/', '_', trim($this->module->getUniqueId(), '/') . '_' . $this->id . '_delete');
+        return $this->canRoute($this->id, 'delete');
+    }
+
+    /**
+     * Whether the current user may use the route `<controller>/<action>` of
+     * the module, checked like the access control of the module
+     * (`AccessBehaviorTrait`).
+     */
+    public function canRoute(string $controllerId, string $actionId): bool
+    {
+        $permission = str_replace(
+            '/',
+            '_',
+            trim($this->module->getUniqueId(), '/') . '_' . $controllerId . '_' . $actionId
+        );
 
         return Yii::$app->getUser()->can($permission, ['route' => true]);
+    }
+
+    /**
+     * Number of not archived items with a version in review by the current
+     * user, 0 without current user.
+     */
+    private function countAwaitingReview(): int
+    {
+        $reference = $this->module->getUserProvider()->getCurrentUserReference();
+        if ($reference === null || $reference === '') {
+            return 0;
+        }
+
+        return (int)Item::find()->active()->awaitingReviewBy($reference)->count();
+    }
+
+    /**
+     * Saves the validated item and writes the history entry (if any) in one
+     * transaction.
+     *
+     * @param string|null $action history action, null for none
+     */
+    private function saveWithHistory(Item $model, ?string $action): bool
+    {
+        $transaction = Item::getDb()->beginTransaction();
+        try {
+            if (!$model->save(false)) {
+                $transaction->rollBack();
+
+                return false;
+            }
+            if ($action !== null) {
+                History::log($model, $action);
+            }
+            $transaction->commit();
+        } catch (Throwable $e) {
+            $transaction->rollBack();
+
+            throw $e;
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether any of the attributes differs from the stored value; null and
+     * an empty string count as equal.
+     *
+     * @param string[] $attributes
+     */
+    private function hasChanged(Item $model, array $attributes): bool
+    {
+        foreach ($attributes as $attribute) {
+            if ((string)$model->getOldAttribute($attribute) !== (string)$model->getAttribute($attribute)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Display name of the user reference, the reference itself if unknown,
+     * "–" without reference.
+     */
+    private function userName(?string $reference): string
+    {
+        if ($reference === null || $reference === '') {
+            return '–';
+        }
+
+        return $this->module->getUserProvider()->getDisplayName($reference) ?? $reference;
     }
 
     /**

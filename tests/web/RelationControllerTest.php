@@ -2,6 +2,7 @@
 
 namespace dmstr\knowledgeLibrary\tests\web;
 
+use dmstr\knowledgeLibrary\models\History;
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Relation;
 use dmstr\knowledgeLibrary\Module;
@@ -227,6 +228,63 @@ class RelationControllerTest extends WebTestCase
         $this->assertNotNull(Relation::findOne($other->id));
         $this->assertNotNull(Item::findOne($source->id));
         $this->assertNotNull(Item::findOne($target->id));
+    }
+
+    public function testAddAndRemoveWriteHistoryForBothItems(): void
+    {
+        $source = $this->createItem(['title' => 'Forest <law>']);
+        $target = $this->createItem(['title' => 'Water act']);
+        $editor = $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('relation/create', $this->body($target), ['itemId' => $source->id]);
+        $relation = Relation::findOne(['source_item_id' => $source->id]);
+
+        $this->assertHistory($source, History::ACTION_RELATION_ADDED, 'forward', 'Water act');
+        $this->assertHistory($target, History::ACTION_RELATION_ADDED, 'inverse', 'Forest <law>');
+        $this->assertSame($editor->uuid, History::findOne(['item_id' => $source->id])->actor_id);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $source->id, 'tab' => 'history']));
+        $this->assertStringContainsString('<td class="knowledge-library-history-what">Relation added: supplements Water act</td>', $html);
+        $html = $this->assertPage($this->get('item/view', ['id' => $target->id, 'tab' => 'history']));
+        $this->assertStringContainsString('<td class="knowledge-library-history-what">Relation added: is supplemented by Forest &lt;law&gt;</td>', $html);
+
+        $this->post('relation/delete', [], ['id' => $relation->id]);
+
+        $this->assertHistory($source, History::ACTION_RELATION_REMOVED, 'forward', 'Water act');
+        $this->assertHistory($target, History::ACTION_RELATION_REMOVED, 'inverse', 'Forest <law>');
+        $html = $this->assertPage($this->get('item/view', ['id' => $source->id, 'tab' => 'history']));
+        $this->assertStringContainsString('Relation removed: supplements Water act', $html);
+
+        Yii::$app->language = 'de';
+        $html = $this->assertPage($this->get('item/view', ['id' => $target->id, 'tab' => 'history']));
+        $this->assertStringContainsString('Beziehung entfernt: wird ergänzt durch Forest &lt;law&gt;', $html);
+    }
+
+    public function testRejectedRelationWritesNoHistory(): void
+    {
+        [$source, $target] = [$this->createItem(), $this->createItem()];
+        $this->createRelation($source, $target);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('relation/create', $this->body($target), ['itemId' => $source->id]);
+        $this->post('relation/create', $this->body($source), ['itemId' => $source->id]);
+
+        $this->assertSame(0, (int)History::find()->count());
+    }
+
+    /**
+     * Asserts exactly one history entry of the action for the item with the
+     * relation details.
+     */
+    private function assertHistory(Item $item, string $action, string $direction, string $title): void
+    {
+        $entries = History::findAll(['item_id' => $item->id, 'action' => $action]);
+        $this->assertCount(1, $entries, $action);
+        $this->assertSame(
+            ['relation' => Relation::TYPE_SUPPLEMENTS, 'direction' => $direction, 'target' => $title],
+            $entries[0]->getDetails()
+        );
+        $this->assertNull($entries[0]->version_id);
     }
 
     private function body(Item $target, string $type = Relation::TYPE_SUPPLEMENTS): array

@@ -10,6 +10,7 @@ use dmstr\knowledgeLibrary\models\Topic;
 use dmstr\knowledgeLibrary\models\Type;
 use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\Module;
+use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\tests\WebTestCase;
 use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
@@ -725,8 +726,12 @@ class ItemControllerTest extends WebTestCase
         $this->assertMatchesRegularExpression('#<li role="presentation" class="active">\s*<a href="\#knowledge-library-tab-versions"#', $html);
         $this->assertStringContainsString('class="tab-pane active" id="knowledge-library-tab-versions"', $html);
         $this->assertSame(1, substr_count($html, 'class="tab-pane active"'));
-        $this->assertSame(1, substr_count($html, 'knowledge-library-placeholder'));
-        $this->assertStringContainsString('The change history will be available in a later release.', $html);
+        $this->assertStringNotContainsString('knowledge-library-placeholder', $html);
+        // The item was created without the page, so it has no history.
+        $this->assertMatchesRegularExpression(
+            '#id="knowledge-library-tab-history">\s*<div class="text-muted knowledge-library-history-empty">No entries yet.</div>#',
+            $html
+        );
     }
 
     public function testDetailShowsArchivedBadge(): void
@@ -1174,6 +1179,154 @@ class ItemControllerTest extends WebTestCase
         foreach (['Neue Version', 'Gültigkeit', 'Nr.', 'In Kraft', 'Ansehen', 'Themen', 'keine', 'Ausgehend', 'Eingehend', 'Keine Hauptdokumente.', 'Keine Anhänge.', 'Version 1, In Kraft'] as $text) {
             $this->assertStringContainsString(Html::encode($text), $html);
         }
+    }
+
+    public function testCreateUpdateAndSourceWriteHistoryOnlyForChanges(): void
+    {
+        $type = $this->createType();
+        $other = $this->createType();
+        $editor = $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('item/create', ['Item' => ['title' => 'Forest law', 'type_id' => $type->id]]);
+        $item = Item::findOne(['title' => 'Forest law']);
+        $this->assertSame([History::ACTION_CREATED], $this->historyActions($item));
+        $this->assertSame($editor->uuid, History::findOne(['item_id' => $item->id])->actor_id);
+
+        // Saving unchanged master data or source writes nothing.
+        $this->post('item/update', ['Item' => ['title' => ' Forest law ', 'type_id' => $type->id]], ['id' => $item->id]);
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+        $this->post('item/source', ['Item' => ['source_name' => 'Ministry', 'source_import_mode' => 'manual']], ['id' => $item->id]);
+        $this->post('item/source', ['Item' => ['source_name' => 'Ministry', 'source_reference' => '', 'source_url' => '', 'source_import_mode' => 'manual']], ['id' => $item->id]);
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+        $this->assertEqualsCanonicalizing(
+            [History::ACTION_CREATED, History::ACTION_SOURCE_CHANGED],
+            $this->historyActions($item)
+        );
+
+        $this->post('item/update', ['Item' => ['title' => 'Forest law', 'type_id' => $other->id]], ['id' => $item->id]);
+        $this->post('item/source', ['Item' => ['source_name' => 'Ministry', 'source_reference' => '§ 4', 'source_import_mode' => 'manual']], ['id' => $item->id]);
+        // Invalid input writes nothing.
+        $this->post('item/update', ['Item' => ['title' => '']], ['id' => $item->id]);
+        $this->post('item/source', ['Item' => ['source_name' => '']], ['id' => $item->id]);
+
+        $this->assertEqualsCanonicalizing(
+            [History::ACTION_CREATED, History::ACTION_MASTER_DATA_CHANGED, History::ACTION_SOURCE_CHANGED, History::ACTION_SOURCE_CHANGED],
+            $this->historyActions($item)
+        );
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'history']));
+        foreach (['Knowledge object created', 'Master data changed', 'Source &amp; origin changed'] as $text) {
+            $this->assertStringContainsString('<td class="knowledge-library-history-what">' . $text . '</td>', $html);
+        }
+        $this->assertSame(4, substr_count($html, '<td class="knowledge-library-history-who">User ' . $editor->uuid . '</td>'));
+        $this->assertSame(4, substr_count($html, '<td class="knowledge-library-history-reason" style="color: #555">–</td>'));
+        $this->assertStringNotContainsString('No entries yet.', $html);
+    }
+
+    public function testHistoryTabShowsNewestFirstWithWhenWhoWhatAndReason(): void
+    {
+        $item = $this->createItem();
+        $old = History::log($item, History::ACTION_ARCHIVED, null, "Outdated\n<b>law</b>");
+        $old->updateAttributes(['created_at' => '2026-01-01 10:00:00', 'actor_id' => 'user-7']);
+        $new = History::log($item, History::ACTION_RESTORED);
+        $new->updateAttributes(['created_at' => '2026-02-01 10:00:00', 'actor_id' => null]);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'history']));
+
+        foreach (['When', 'Who', 'What', 'Reason'] as $header) {
+            $this->assertMatchesRegularExpression('#<th[^>]*>' . $header . '</th>#', $html);
+        }
+        $this->assertLessThan(strpos($html, '>Archived</td>'), strpos($html, '>Restored</td>'));
+        $this->assertStringContainsString(
+            '<td class="knowledge-library-history-when" style="white-space: nowrap">'
+            . Html::encode(Yii::$app->formatter->asDatetime('2026-01-01 10:00:00', 'short')) . '</td>',
+            $html
+        );
+        $this->assertStringContainsString('<td class="knowledge-library-history-who">User user-7</td>', $html);
+        $this->assertStringContainsString('<td class="knowledge-library-history-who">–</td>', $html);
+        $this->assertStringContainsString('Outdated<br />' . "\n" . '&lt;b&gt;law&lt;/b&gt;</td>', $html);
+
+        Yii::$app->language = 'de';
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'history']));
+        foreach (['Wann', 'Wer', 'Was', 'Begründung', 'Archiviert', 'Wiederhergestellt'] as $text) {
+            $this->assertStringContainsString($text, $html);
+        }
+        $html = $this->assertPage($this->get('item/view', ['id' => $this->createItem()->id, 'tab' => 'history']));
+        $this->assertStringContainsString('Noch keine Einträge.', $html);
+    }
+
+    public function testAwaitingMyApprovalLinkCountsAndFilters(): void
+    {
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
+        $mine = $this->createItem(['type_id' => $type->id, 'title' => 'Mine']);
+        $others = $this->createItem(['type_id' => $type->id, 'title' => 'Others']);
+        $archived = $this->createItem(['type_id' => $type->id, 'title' => 'Archived mine']);
+        $this->createItem(['type_id' => $type->id, 'title' => 'Plain']);
+        $reviewer = $this->loginAs(Module::ROLE_REVIEWER);
+        DummyUserProvider::$reviewerOptions = ['user-2' => 'User user-2', $reviewer->uuid => 'Reviewer'];
+        DummyUserProvider::$currentReference = 'user-1';
+        foreach ([[$mine, $reviewer->uuid], [$others, 'user-2'], [$archived, $reviewer->uuid]] as [$item, $reference]) {
+            $this->assertTrue($this->createVersion($item, ['valid_from' => '2099-01-01'])->submitForReview($reference));
+        }
+        $archived->updateAttributes(['is_archived' => true]);
+        DummyUserProvider::$currentReference = $reviewer->uuid;
+
+        $html = $this->assertPage($this->get('item/index'));
+        $filterUrl = Html::encode(Url::to(['/knowledge-library/item/index', 'ItemSearch' => ['review' => 'mine']]));
+        $this->assertMatchesRegularExpression(
+            '#<a class="btn btn-sm knowledge-library-awaiting-review-link btn-default" href="' . preg_quote($filterUrl, '#')
+            . '" aria-pressed="false"><i class="fa fa-hourglass-half"></i> Awaiting my approval \(1\)</a>#',
+            $html
+        );
+        $this->assertSame(4 - 1, substr_count($html, self::ROW_CLASS));
+
+        $html = $this->assertPage($this->get('item/index', ['ItemSearch' => ['review' => 'mine']]));
+        $this->assertStringContainsString('knowledge-library-awaiting-review-link btn-warning active', $html);
+        $this->assertSame(1, substr_count($html, self::ROW_CLASS));
+        $this->assertStringContainsString('>Mine</a>', $html);
+
+        $html = $this->assertPage($this->get('item/index', ['ItemSearch' => ['review' => 'mine', 'archived' => 'all']]));
+        $this->assertSame(2, substr_count($html, self::ROW_CLASS));
+
+        // A manipulated value falls back to all items.
+        $html = $this->assertPage($this->get('item/index', ['ItemSearch' => ['review' => 'yours']]));
+        $this->assertSame(3, substr_count($html, self::ROW_CLASS));
+        $this->assertStringContainsString('btn-default" href="' . $filterUrl . '"', $html);
+    }
+
+    public function testAwaitingMyApprovalLinkIsOnlyOfferedToReviewers(): void
+    {
+        $this->createItem();
+
+        $this->loginAs(Module::ROLE_EDITOR);
+        $html = $this->assertPage($this->get('item/index'));
+        $this->assertStringNotContainsString('knowledge-library-awaiting-review-link', $html);
+        // An active filter can always be reset.
+        $html = $this->assertPage($this->get('item/index', ['ItemSearch' => ['review' => 'mine']]));
+        $this->assertStringContainsString('knowledge-library-awaiting-review-link btn-warning active', $html);
+        $this->assertSame(0, substr_count($html, self::ROW_CLASS));
+
+        foreach ([Module::ROLE_REVIEWER, Module::ROLE_ADMIN] as $role) {
+            $this->loginAs($role);
+            $html = $this->assertPage($this->get('item/index'));
+            $this->assertStringContainsString('Awaiting my approval (0)', $html, $role);
+        }
+
+        Yii::$app->language = 'de';
+        $html = $this->assertPage($this->get('item/index'));
+        $this->assertStringContainsString('Wartet auf meine Freigabe (0)', $html);
+    }
+
+    /**
+     * Actions of the history entries of the item; entries of the same second
+     * have no defined order.
+     *
+     * @return string[]
+     */
+    private function historyActions(Item $item): array
+    {
+        return History::find()->select('action')->where(['item_id' => $item->id])->column();
     }
 
     private function createRelation(Item $source, Item $target): Relation
