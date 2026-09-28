@@ -57,6 +57,14 @@ class ItemController extends BaseController
      */
     private const SOURCE_ATTRIBUTES = ['source_name', 'source_reference', 'source_url', 'source_import_mode'];
 
+    protected function verbs(): array
+    {
+        return array_merge(parent::verbs(), [
+            'archive' => ['POST'],
+            'restore' => ['POST'],
+        ]);
+    }
+
     /**
      * Lists the items with filters, sorting and the state of each item.
      *
@@ -124,7 +132,10 @@ class ItemController extends BaseController
      *
      * The header shows the version in review (with "Change reviewer" for
      * admins and "Review" for its reviewer) and the note of a returned draft;
-     * the tab history lists the history entries, newest first.
+     * the tab history lists the history entries, newest first. Admins get
+     * "Archive" or "Restore"; archived items offer no new version and no
+     * correction. The tab versions offers "Correct", "Withdraw" and
+     * "Approve" per version, depending on its state and the route rights.
      *
      * @param string|null $version number of the version shown in the tab content
      * @param string|null $tab active tab
@@ -161,6 +172,9 @@ class ItemController extends BaseController
         return $this->render('view', [
             'model' => $model,
             'canDelete' => $this->canDelete(),
+            'canArchive' => $this->canArchive($model),
+            'canCorrectRoute' => $this->canRoute('version', 'correct'),
+            'canWithdrawRoute' => $this->canRoute('version', 'withdraw'),
             'uploadedByName' => $uploadedBy === null || $uploadedBy === ''
                 ? null
                 : ($users->getDisplayName($uploadedBy) ?? $uploadedBy),
@@ -311,6 +325,65 @@ class ItemController extends BaseController
     }
 
     /**
+     * Archives the item (body `reason`, optional), see Item::archive(). Open
+     * drafts and reviews are kept; while archived, no new versions can be
+     * created, corrected, continued, approved or published.
+     *
+     * @throws NotFoundHttpException
+     */
+    public function actionArchive(string $id): Response
+    {
+        $model = $this->findModel($id);
+
+        return $this->redirectArchiveResult($model, $model->archive($this->postReason()), Yii::t(
+            'knowledge-library',
+            'Knowledge object archived.'
+        ));
+    }
+
+    /**
+     * Restores an archived item (body `reason`, optional), see
+     * Item::restore().
+     *
+     * @throws NotFoundHttpException
+     */
+    public function actionRestore(string $id): Response
+    {
+        $model = $this->findModel($id);
+
+        return $this->redirectArchiveResult($model, $model->restore($this->postReason()), Yii::t(
+            'knowledge-library',
+            'Knowledge object restored.'
+        ));
+    }
+
+    /**
+     * Flash message of archiving or restoring (the errors of the item on
+     * failure) and redirect to the detail page.
+     */
+    private function redirectArchiveResult(Item $model, bool $done, string $message): Response
+    {
+        $session = Yii::$app->getSession();
+        if ($done) {
+            $session->setFlash('success', $message);
+        } else {
+            $session->setFlash('error', implode(' ', $model->getFirstErrors()));
+        }
+
+        return $this->redirect(['view', 'id' => $model->id]);
+    }
+
+    /**
+     * Body parameter `reason`, null if missing or empty.
+     */
+    private function postReason(): ?string
+    {
+        $reason = $this->request->post('reason');
+
+        return is_string($reason) && trim($reason) !== '' ? trim($reason) : null;
+    }
+
+    /**
      * Version shown in the tab content: the one with the given number, else
      * the version valid today, else the highest.
      *
@@ -349,19 +422,12 @@ class ItemController extends BaseController
     }
 
     /**
-     * Whether the current user may use the route `<controller>/<action>` of
-     * the module, checked like the access control of the module
-     * (`AccessBehaviorTrait`).
+     * Whether the current user may archive the item, or restore it if it is
+     * archived, checked like the access control of the module.
      */
-    public function canRoute(string $controllerId, string $actionId): bool
+    public function canArchive(Item $model): bool
     {
-        $permission = str_replace(
-            '/',
-            '_',
-            trim($this->module->getUniqueId(), '/') . '_' . $controllerId . '_' . $actionId
-        );
-
-        return Yii::$app->getUser()->can($permission, ['route' => true]);
+        return $this->canRoute($this->id, $model->is_archived ? 'restore' : 'archive');
     }
 
     /**

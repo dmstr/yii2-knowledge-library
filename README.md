@@ -23,10 +23,10 @@ The library stores knowledge **types** and **topics**, knowledge **items**, thei
 
 ### Version statuses
 
-- `draft`: being edited, at most one per item; may be empty
-- `in_review`: submitted to a reviewer (`submitForReview()`), at most one per item
-- `published`: released (`publish()`); a draft can be published directly only if its type does not require a review
-- `withdrawn`: no longer valid
+- `draft`: being edited, at most one per item; may be empty. No draft can be created while a version of the item is in review or the item is archived
+- `in_review`: submitted to a reviewer (`submitForReview()`), at most one per item; the reviewer approves (`approve()`) or returns it as draft (`returnToDraft()`)
+- `published`: released (`publish()`, `approve()`); a draft can be published directly only if its type does not require a review
+- `withdrawn`: no longer valid, withdrawn (`withdraw()`) or replaced by a correction
 
 Versions in review or published need content: a non-empty text or at least one main file.
 
@@ -38,7 +38,7 @@ A published version has an effective state at a given date (`Version::getEffecti
 - `upcoming`: starts after the date
 - `historical`: ended before the date, or superseded
 
-For types **with** a validity period a version is valid from `valid_from` until `valid_until` (open-ended if empty). A new version must start strictly after the latest published version; publishing it ends the predecessor the day before, unless the predecessor already ends earlier (gaps are allowed). Corrections (`corrects_version_id`) are exempt from this rule.
+For types **with** a validity period a version is valid from `valid_from` until `valid_until` (open-ended if empty). A new version must start strictly after the latest published version; publishing it ends the predecessor the day before, unless the predecessor already ends earlier (gaps are allowed). Corrections (`corrects_version_id`) are exempt from this rule, they keep the period of the corrected version (see [Withdrawal and corrections](#withdrawal-and-corrections)).
 
 For types **without** a validity period versions have no dates; the published version with the highest number is in force, all older ones are historical.
 
@@ -127,6 +127,8 @@ The backend module provides the following controllers. Routes are relative to th
 | `item/update` | Edit the master data of an item |
 | `item/source` | Edit the source data of an item |
 | `item/delete` | Delete an item with all its versions, files, relations and history (POST only) |
+| `item/archive` | Archive an item, body `reason` optional (POST only) |
+| `item/restore` | Restore an archived item, body `reason` optional (POST only) |
 | `type/index` | List of types |
 | `type/create` | Create a type |
 | `type/update` | Edit a type |
@@ -139,6 +141,12 @@ The backend module provides the following controllers. Routes are relative to th
 | `version/update` | Step of the version wizard (`step` 1 to 4) |
 | `version/publish` | Publish a draft of a type without review (POST only) |
 | `version/discard` | Discard a draft with its files (POST only) |
+| `version/review` | Review page of a version in review, for its reviewer |
+| `version/approve` | Approve and publish a version in review, body `note` optional (POST only) |
+| `version/return` | Return a version in review to its submitter, body `note` required (POST only) |
+| `version/reviewer` | Change the reviewer of a version in review, body `reviewer` and `reason` optional |
+| `version/withdraw` | Withdraw a published version, body `reason` and `successor` (`previous`, `correction` or `none`) |
+| `version/correct` | Start the correction of a published version, body `reason` optional (POST only) |
 | `file/download` | Download a file of a version |
 | `relation/create` | Add a relation from an item to another (POST only) |
 | `relation/delete` | Remove a relation (POST only) |
@@ -147,12 +155,47 @@ The views use `yii\bootstrap\ActiveForm` and `yii\grid\GridView` with Bootstrap 
 
 ### Version wizard
 
-New versions are created in a wizard that works on the draft of the item (at most one per item). A new draft takes over the text, the files and the details (title, summary, topics) of the latest published version. The wizard has four steps, each saved on its own; "Save as draft" returns to the detail page in every step:
+New versions are created in a wizard that works on the draft of the item (at most one per item). A new draft takes over the text, the files and the details (title, summary, topics) of the latest published version. The wizard has four steps, each saved on its own; "Save as draft" returns to the detail page in every step and writes the history entry `draft_saved`:
 
 1. **Content**: Markdown text, main files (`mainFiles[]`, several at once) and attachments (`attachments[<i>]` with the title `attachmentTitles[<i>]`). Files of the draft can be removed (`remove[<file-id>]=1`); files uploaded in the draft are highlighted. An attachment whose content is already attached to another item shows a hint with a link to create an item of its own from it; the hint does not block. The step is complete with a text or at least one main file, attachments alone do not count. Rejected uploads are shown with the reason and keep the wizard on the step.
-2. **Validity**: Valid From and Valid Until for types with a validity period, with the consequences for the previous version and a preview of the timeline.
+2. **Validity**: Valid From and Valid Until for types with a validity period, with the consequences for the previous version and a preview of the timeline. A correction shows the period of the corrected version read-only.
 3. **Details**: title, topics and summary; they are applied to the item when the version is published.
-4. **Check**: summary of the version and "Publish" for types without review.
+4. **Check**: summary of the version and "Publish" for types without review; for types with review the reviewing person (`reviewer`), an optional message (`message`) and "Submit for approval" (`submit`).
+
+The wizard of a correction is titled "Correct version n" with the number of the corrected version. Drafts of archived items cannot be continued, only discarded.
+
+### Review workflow
+
+Versions of a type with `requires_review` are published by a second person. The editor submits the draft in step 4 of the wizard to a reviewing person, optionally with a message; the version is then `in_review`, and no other draft can be created for the item until the review ends. The detail page shows who reviews the version; the list offers the filter "Awaiting my approval" (`ItemSearch[review]=mine`) with the number of items waiting for the current user.
+
+The reviewer opens the review page (`version/review`) with the message, validity, consequences, topics, text and files of the version and either
+
+- approves it (`version/approve`): the version is published like a direct publication, the note is kept as reason of the history entry, or
+- returns it (`version/return`) with a required note: the version becomes a draft again, the note and the reviewer are shown on the detail page and in the wizard, and submitting again clears them.
+
+Only the chosen reviewer may approve or return a version, and nobody can submit a version to themselves (four-eyes principle, checked in `Version`, not only in the forms). Admins can hand a review over to another person (`version/reviewer`); the submitter and the current reviewer cannot be chosen.
+
+The reviewing persons come from `UserProviderInterface::getReviewerOptions()`. The default provider offers the users with a direct assignment of the role `KnowledgeLibraryReviewer` or `KnowledgeLibraryAdmin` (all users if the application has no `authManager`). Root users of `dmstr\web\User` without a role assignment are therefore not offered as reviewers, and as the model checks the reviewer, they cannot approve a review of someone else either.
+
+### Withdrawal and corrections
+
+A published version in force or upcoming can be withdrawn on the page `version/withdraw` with a required reason. The page asks what applies instead in the period of the version:
+
+- **Previous version remains valid** (`previous`): the published version with the latest Valid From before the withdrawn one takes over its Valid Until (open-ended if empty). Not available without previous version.
+- **Corrected version** (`correction`): continues to the correction below; the version stays published until the correction is published.
+- **Nothing applies** (`none`): the item has no valid version in that period.
+
+For types without a validity period the published version with the highest number is valid anyway: "previous version remains valid" only documents that, and "nothing applies" is available only if there is no previous version.
+
+"Correct" (`version/correct`) creates the draft of a correction of any published version and opens the wizard. The correction takes over text, files and validity period of the faulty version; its period cannot be changed. Publishing the correction (directly or through the review) withdraws the faulty version, other versions are not changed. For types without a validity period only the version in force can be corrected. A correction is not possible while the item has a draft or a version in review, or when it is archived. The reason given on the withdrawal page is kept with the faulty version until the correction is published and cleared when its draft is discarded. The confirmation of "Correct" names the period and, for a period in the past, the years whose answers change.
+
+### Archive
+
+Admins archive and restore items (`item/archive`, `item/restore`). Archived items are hidden in the list by default and marked "Archived". No new versions can be created, corrected, continued, approved or published for them: the routes redirect to the detail page with the message "The knowledge object is archived.". Returning a review, withdrawing a version, discarding a draft, master data, source and relations remain possible. Open drafts and reviews are kept when an item is archived.
+
+### History
+
+Every change of an item is logged in the table `history` and shown in the tab "History" of the detail page (when, who, what, reason; newest first). Version transitions (submit, hand over, return, approve, publish, withdraw, correct) are logged by `Version` in the same transaction, archiving and restoring by `Item`, the other entries (item created, master data and source changed, draft saved and discarded, relations added and removed) by the controllers. Structured facts such as the version number, the reviewer or the successor of a withdrawal are kept as JSON in `history.details`, so an entry can still be described after its version was deleted (`History::describe()`). Deleting an item deletes its history.
 
 ### Delete log
 
@@ -194,6 +237,8 @@ The package brings the following migrations:
 | `m260928_185500_knowledge_library_routes` | Route permissions of items, types and topics |
 | `m260928_203000_knowledge_library_versions` | Draft details of versions (`draft_title`, `draft_summary`, `draft_topic_ids`) and the content hash of files (`content_hash`) |
 | `m260928_203100_knowledge_library_routes_2` | Route permissions of the version wizard, the file download and the relations |
+| `m260928_223000_knowledge_library_history_details` | Structured details of history entries (`history.details`) |
+| `m260928_223100_knowledge_library_routes_3` | Route permissions of review, withdrawal, correction and archive |
 | `i18n/m260928_100200_knowledge_library_translations` | Optional German translations, see [Translations](#translations) |
 
 Add the migration path to the migrate controller of your console application:
@@ -258,19 +303,22 @@ They are grouped into roles that build on each other: `KnowledgeLibraryAdmin` co
 
 ### Route permissions
 
-Every action of the backend module is checked against a permission named `<module-id>_<controller>_<action>`, e.g. `knowledge-library_item_delete`. The migrations `m260928_185500_knowledge_library_routes` and `m260928_203100_knowledge_library_routes_2` create one permission per action and assign them to the roles:
+Every action of the backend module is checked against a permission named `<module-id>_<controller>_<action>`, e.g. `knowledge-library_item_delete`. The migrations `m260928_185500_knowledge_library_routes`, `m260928_203100_knowledge_library_routes_2` and `m260928_223100_knowledge_library_routes_3` create one permission per action and assign them to the roles:
 
 | Permission | Role |
 | --- | --- |
 | `knowledge-library_item_index`, `knowledge-library_item_create`, `knowledge-library_item_view`, `knowledge-library_item_update`, `knowledge-library_item_source` | `KnowledgeLibraryEditor` |
-| `knowledge-library_item_delete` | `KnowledgeLibraryAdmin` |
+| `knowledge-library_item_delete`, `knowledge-library_item_archive`, `knowledge-library_item_restore` | `KnowledgeLibraryAdmin` |
 | `knowledge-library_type_index`, `knowledge-library_type_create`, `knowledge-library_type_update`, `knowledge-library_type_delete` | `KnowledgeLibraryAdmin` |
 | `knowledge-library_topic_index`, `knowledge-library_topic_create`, `knowledge-library_topic_update`, `knowledge-library_topic_delete` | `KnowledgeLibraryAdmin` |
 | `knowledge-library_version_create`, `knowledge-library_version_update`, `knowledge-library_version_publish`, `knowledge-library_version_discard` | `KnowledgeLibraryEditor` |
+| `knowledge-library_version_withdraw`, `knowledge-library_version_correct` | `KnowledgeLibraryEditor` |
+| `knowledge-library_version_review`, `knowledge-library_version_approve`, `knowledge-library_version_return` | `KnowledgeLibraryReviewer` |
+| `knowledge-library_version_reviewer` | `KnowledgeLibraryAdmin` |
 | `knowledge-library_file_download` | `KnowledgeLibraryEditor` |
 | `knowledge-library_relation_create`, `knowledge-library_relation_delete` | `KnowledgeLibraryEditor` |
 
-Reviewers and admins inherit the editor permissions through the role chain. The permission names assume the module ID `knowledge-library`; with another module ID the application creates the permissions itself.
+Reviewers and admins inherit the editor permissions, admins the reviewer permissions through the role chain. The route permission allows opening the review pages; approving or returning a version additionally requires being its chosen reviewer. The permission names assume the module ID `knowledge-library`; with another module ID the application creates the permissions itself.
 
 Everyone who may open the detail page of an item may also download its files, including the files of drafts.
 

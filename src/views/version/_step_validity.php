@@ -5,6 +5,9 @@
  * types without validity period), the first error, the consequences of
  * publishing and the preview of the timeline.
  *
+ * A correction keeps the validity period of the corrected version: the
+ * dates are shown as text, with a hint if the correction changes the past.
+ *
  * @var yii\web\View $this
  * @var dmstr\knowledgeLibrary\models\Version $model
  * @var dmstr\knowledgeLibrary\models\Item $item
@@ -12,6 +15,7 @@
  * @var dmstr\knowledgeLibrary\models\ValidityCheck $check
  */
 
+use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\widgets\ValidityTimeline;
 use yii\helpers\Html;
 
@@ -30,7 +34,33 @@ $inputStyle = static fn (bool $invalid) => 'height: 34px; box-sizing: border-box
     . ($invalid ? ' border: 1px solid #dd4b39; background: #fdf1ef' : ' border: 1px solid #d2d6de');
 ?>
 <div class="knowledge-library-wizard-validity">
-    <?php if ($hasValidityPeriod): ?>
+    <?php if ($check->isCorrection()): ?>
+        <div class="knowledge-library-wizard-correction-period" style="display: flex; flex-wrap: wrap; gap: 6px 26px; font-size: 16px">
+            <?php if ($hasValidityPeriod): ?>
+                <span>
+                    <span style="color: #777"><?= Html::encode(Yii::t('knowledge-library', 'Valid From')) ?></span>
+                    <b><?= Html::encode($check->getValidFrom() === null ? '–' : Yii::$app->formatter->asDate($check->getValidFrom())) ?></b>
+                </span>
+                <span>
+                    <span style="color: #777"><?= Html::encode(Yii::t('knowledge-library', 'Valid Until')) ?></span>
+                    <b><?= Html::encode($check->getValidUntil() === null
+                        ? Yii::t('knowledge-library', 'open-ended')
+                        : Yii::$app->formatter->asDate($check->getValidUntil())) ?></b>
+                </span>
+            <?php else: ?>
+                <span><?= Html::encode(Yii::t('knowledge-library', 'Valid from publication, open-ended.')) ?></span>
+            <?php endif ?>
+        </div>
+        <div class="knowledge-library-wizard-correction-note" style="margin-top: 8px; color: #777">
+            <?= Html::encode(Version::correctionPeriodMessage()) ?>
+        </div>
+        <?php $pastHint = $check->getPastHint() ?>
+        <?php if ($pastHint !== null): ?>
+            <div class="knowledge-library-wizard-past-hint" style="margin-top: 12px; background: #f39c12; border-left: 5px solid #c87f0a; color: #fff; border-radius: 3px; padding: 11px 15px">
+                <?= Html::encode($pastHint) ?>
+            </div>
+        <?php endif ?>
+    <?php elseif ($hasValidityPeriod): ?>
         <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
             <label style="display: flex; flex-direction: column; gap: 5px; width: 220px">
                 <?= Html::encode(Yii::t('knowledge-library', 'Valid From')) ?>

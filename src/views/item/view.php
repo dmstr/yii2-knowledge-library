@@ -7,6 +7,9 @@
  * @var yii\web\View $this
  * @var dmstr\knowledgeLibrary\models\Item $model
  * @var bool $canDelete
+ * @var bool $canArchive whether the current user may archive the item (restore if archived)
+ * @var bool $canCorrectRoute whether the current user may use version/correct
+ * @var bool $canWithdrawRoute whether the current user may use version/withdraw
  * @var string|null $uploadedByName display name of the user who uploaded the source
  * @var string $activeTab key of the active tab
  * @var dmstr\knowledgeLibrary\models\Version[] $versions versions without drafts, highest number first
@@ -85,14 +88,16 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
 
     <div class="knowledge-library-item-actions">
         <?php if ($draft !== null): ?>
-            <?= Html::a(
-                '<i class="fa fa-pencil"></i> ' . Html::encode(Yii::t('knowledge-library', 'Continue draft')),
-                ['version/update', 'id' => $draft->id, 'step' => 1],
-                [
-                    'class' => 'btn knowledge-library-item-continue-draft',
-                    'style' => $actionStyle . 'background: #f39c12; border: 1px solid #e08e0b',
-                ]
-            ) ?>
+            <?php if (!$model->is_archived): ?>
+                <?= Html::a(
+                    '<i class="fa fa-pencil"></i> ' . Html::encode(Yii::t('knowledge-library', 'Continue draft')),
+                    ['version/update', 'id' => $draft->id, 'step' => 1],
+                    [
+                        'class' => 'btn knowledge-library-item-continue-draft',
+                        'style' => $actionStyle . 'background: #f39c12; border: 1px solid #e08e0b',
+                    ]
+                ) ?>
+            <?php endif ?>
             <?= Html::a(
                 '<i class="fa fa-times"></i> ' . Html::encode(Yii::t('knowledge-library', 'Discard draft')),
                 ['version/discard', 'id' => $draft->id],
@@ -104,7 +109,7 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
                     ]),
                 ]
             ) ?>
-        <?php elseif (!$hasVersionInReview): ?>
+        <?php elseif (!$hasVersionInReview && !$model->is_archived): ?>
             <?= Html::a(
                 '<i class="fa fa-plus"></i> ' . Html::encode($versions === []
                     ? Yii::t('knowledge-library', 'Create first version')
@@ -122,6 +127,31 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
             ['update', 'id' => $model->id],
             ['class' => 'btn btn-default knowledge-library-item-edit']
         ) ?>
+        <?php if ($canArchive && $model->is_archived): ?>
+            <?= Html::a(
+                '<i class="fa fa-undo"></i> ' . Html::encode(Yii::t('knowledge-library', 'Restore')),
+                ['restore', 'id' => $model->id],
+                [
+                    'class' => 'btn btn-default knowledge-library-item-restore',
+                    'data-method' => 'post',
+                    'data-confirm' => Yii::t('knowledge-library', 'Restore "{title}"?', ['title' => $model->title]),
+                ]
+            ) ?>
+        <?php elseif ($canArchive): ?>
+            <?= Html::a(
+                '<i class="fa fa-archive"></i> ' . Html::encode(Yii::t('knowledge-library', 'Archive')),
+                ['archive', 'id' => $model->id],
+                [
+                    'class' => 'btn btn-default knowledge-library-item-archive',
+                    'data-method' => 'post',
+                    'data-confirm' => Yii::t(
+                        'knowledge-library',
+                        'Archive "{title}"? No new versions can be created while it is archived.',
+                        ['title' => $model->title]
+                    ),
+                ]
+            ) ?>
+        <?php endif ?>
         <?php if ($canDelete): ?>
             <?= Html::a(
                 '<i class="fa fa-trash"></i> ' . Html::encode(Yii::t('knowledge-library', 'Delete')),
@@ -220,7 +250,14 @@ $actionStyle = 'display: inline-flex; align-items: center; gap: 6px; color: #fff
         <?php foreach ($tabs as $key => $label): ?>
             <div role="tabpanel" class="tab-pane<?= $key === $activeTab ? ' active' : '' ?>" id="knowledge-library-tab-<?= $key ?>">
                 <?php if ($key === 'versions'): ?>
-                    <?= $this->render('_tab_versions', ['model' => $model, 'versions' => $versions]) ?>
+                    <?= $this->render('_tab_versions', [
+                        'model' => $model,
+                        'versions' => $versions,
+                        'draft' => $draft,
+                        'isReviewer' => $isReviewer,
+                        'canCorrectRoute' => $canCorrectRoute,
+                        'canWithdrawRoute' => $canWithdrawRoute,
+                    ]) ?>
                 <?php elseif ($key === 'content'): ?>
                     <?= $this->render('_tab_content', [
                         'model' => $model,

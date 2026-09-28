@@ -78,6 +78,8 @@ class VersionController extends BaseController
             'approve' => ['POST'],
             'return' => ['POST'],
             'reviewer' => ['GET', 'POST'],
+            'withdraw' => ['GET', 'POST'],
+            'correct' => ['POST'],
         ]);
     }
 
@@ -387,11 +389,115 @@ class VersionController extends BaseController
     }
 
     /**
-     * Title of the wizard: "Create first version" for an item without other
-     * versions, "Create version n" otherwise.
+     * Renders (GET) or performs (POST) the withdrawal of a published version
+     * in force or upcoming, see Version::withdraw().
+     *
+     * Body: `reason` (required) and `successor`, what applies instead:
+     * `previous` (the previous version remains valid), `none` (nothing
+     * applies) or `correction`. `previous` carries the ID of the previous
+     * version shown on the page, so a change in the meantime is detected.
+     * `correction` does not withdraw the version but starts its correction
+     * like version/correct, with the reason; the version is withdrawn when
+     * the correction is published.
+     *
+     * A version that cannot be withdrawn (anymore) redirects to the detail
+     * page with the reason as flash message. Also possible for archived
+     * items.
+     *
+     * @return string|Response
+     * @throws NotFoundHttpException
+     */
+    public function actionWithdraw(string $id)
+    {
+        $model = $this->findVersion($id);
+        $session = Yii::$app->getSession();
+
+        if (!$model->canWithdraw()) {
+            // Fails on the state check before anything is written; the
+            // reason becomes the error of `status`.
+            $model->withdraw('', Version::WITHDRAW_NONE);
+            $session->setFlash('error', (string)$model->getFirstError('status'));
+
+            return $this->redirect(['item/view', 'id' => $model->item_id, 'tab' => ItemController::TAB_VERSIONS]);
+        }
+
+        $previous = $model->getPreviousForWithdrawal();
+        $hasValidityPeriod = $model->item->type === null || (bool)$model->item->type->has_validity_period;
+        $reason = '';
+        $successor = $previous !== null ? Version::WITHDRAW_PREVIOUS : Version::WITHDRAW_NONE;
+
+        if ($this->request->getIsPost()) {
+            $reason = $this->postString('reason');
+            $successor = $this->postString('successor');
+
+            if ($successor === Version::WITHDRAW_CORRECTION) {
+                if (trim($reason) === '') {
+                    $model->addError('withdraw_reason', Yii::t('knowledge-library', 'Enter a reason for the withdrawal.'));
+                } else {
+                    return $this->startCorrection($model, $reason);
+                }
+            } else {
+                $seen = $this->postString('previous');
+                $seenPrevious = null;
+                if ($seen !== '') {
+                    $seenPrevious = Version::find()->forItem($model->item_id)->andWhere(['id' => $seen])->one()
+                        ?? new Version(['id' => $seen]);
+                }
+
+                if ($model->withdraw($reason, $successor, $seenPrevious)) {
+                    $session->setFlash('success', Yii::t('knowledge-library', 'Version {number} withdrawn.', [
+                        'number' => (int)$model->number,
+                    ]));
+
+                    return $this->redirect(['item/view', 'id' => $model->item_id]);
+                }
+            }
+        }
+
+        $bars = ArrayHelper::index(ValidityCheck::timeline($model->item)['v'], 'n');
+        $bar = $bars[(int)$model->number] ?? null;
+
+        return $this->render('withdraw', [
+            'model' => $model,
+            'item' => $model->item,
+            'previous' => $previous,
+            'hasValidityPeriod' => $hasValidityPeriod,
+            'period' => static::periodText($bar['a'] ?? $model->valid_from, $bar !== null ? $bar['b'] : $model->valid_until),
+            'canCorrect' => $model->canCorrect() && $this->canRoute($this->id, 'correct'),
+            'reason' => $reason,
+            'successor' => $successor,
+        ]);
+    }
+
+    /**
+     * Starts the correction of a published version (query `id` of the faulty
+     * version, body `reason` optional): creates the draft of the correction,
+     * see Version::createCorrection(), and opens it in the wizard.
+     *
+     * Not possible for archived items, while the item has a draft or a
+     * version in review, and for versions that cannot be corrected; the
+     * reason is shown as flash message on the detail page.
+     *
+     * @throws NotFoundHttpException
+     */
+    public function actionCorrect(string $id): Response
+    {
+        return $this->startCorrection($this->findVersion($id), $this->postString('reason'));
+    }
+
+    /**
+     * Title of the wizard: "Correct version n" (number of the corrected
+     * version) for a correction, "Create first version" for an item without
+     * other versions, "Create version n" otherwise.
      */
     public static function wizardTitle(Version $model): string
     {
+        if ($model->isCorrection() && $model->correctedVersion !== null) {
+            return Yii::t('knowledge-library', 'Correct version {number}', [
+                'number' => (int)$model->correctedVersion->number,
+            ]);
+        }
+
         $hasOtherVersions = Version::find()
             ->forItem($model->item_id)
             ->andWhere(['not', ['id' => $model->id]])
@@ -418,7 +524,17 @@ class VersionController extends BaseController
         $formatter = Yii::$app->formatter;
 
         $lines = [Yii::t('knowledge-library', 'Publish version {number}?', ['number' => (int)$model->number])];
-        if ($check->isValid()) {
+        if ($check->isCorrection()) {
+            $validFrom = $check->getValidFrom();
+            if ($validFrom !== null) {
+                $lines[] = Yii::t('knowledge-library', 'Valid From') . ': ' . $formatter->asDate($validFrom);
+            }
+            $lines[] = Yii::t('knowledge-library', 'Consequences') . ': ' . implode(' ', $check->getConsequences());
+            $hint = $check->getPastHint();
+            if ($hint !== null) {
+                $lines[] = $hint;
+            }
+        } elseif ($check->isValid()) {
             $validFrom = (string)$check->getValidFrom();
             $lines[] = Yii::t('knowledge-library', 'Valid From') . ': ' . $formatter->asDate($validFrom);
 
@@ -445,6 +561,60 @@ class VersionController extends BaseController
         $lines[] = Yii::t('knowledge-library', 'Content') . ': ' . $model->getContentSummary();
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * Confirmation text of "Correct" for a published version, e.g. "Correct
+     * version 2? / The faulty version is withdrawn, the correction takes over
+     * the same validity period (01.01.2025 – open-ended). / Changes the
+     * answers to questions about 2025 to 2026."
+     *
+     * @param string $period validity period of the version, see periodText()
+     * @param string|null $today date in the format `Y-m-d`, today if null
+     */
+    public static function correctionConfirmation(Version $corrected, string $period, ?string $today = null): string
+    {
+        // Unsaved probe of the correction, as ValidityCheck describes a new
+        // version.
+        $probe = new Version([
+            'item_id' => $corrected->item_id,
+            'corrects_version_id' => $corrected->id,
+        ]);
+        $probe->populateRelation('item', $corrected->item);
+        $probe->populateRelation('correctedVersion', $corrected);
+
+        $lines = [
+            Yii::t('knowledge-library', 'Correct version {number}', ['number' => (int)$corrected->number]) . '?',
+            Yii::t(
+                'knowledge-library',
+                'The faulty version is withdrawn, the correction takes over the same validity period ({period}).',
+                ['period' => $period]
+            ),
+        ];
+        $hint = (new ValidityCheck($probe, $today))->getPastHint();
+        if ($hint !== null) {
+            $lines[] = $hint;
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Validity period as text, e.g. "01.01.2025 – 31.12.2025" or
+     * "01.01.2025 – open-ended"; "–" without start.
+     *
+     * @param string|null $from date in the format `Y-m-d`
+     * @param string|null $until date in the format `Y-m-d`, null if open-ended
+     */
+    public static function periodText(?string $from, ?string $until): string
+    {
+        if ($from === null || $from === '') {
+            return '–';
+        }
+        $formatter = Yii::$app->formatter;
+
+        return $formatter->asDate($from) . ' – '
+            . ($until === null || $until === '' ? Yii::t('knowledge-library', 'open-ended') : $formatter->asDate($until));
     }
 
     /**
@@ -797,7 +967,55 @@ class VersionController extends BaseController
             $model->setDraftTopicIds($model->item->getTopicIds());
         }
 
+        // A correction follows the current period of the corrected version,
+        // e.g. after it was extended by a withdrawal.
+        $corrected = $model->isCorrection() ? $model->correctedVersion : null;
+        if ($corrected !== null) {
+            $model->valid_from = $corrected->valid_from;
+            $model->valid_until = $corrected->valid_until;
+        }
+
         return $model;
+    }
+
+    /**
+     * Finds a version that is not a draft, with its item.
+     *
+     * @throws NotFoundHttpException
+     */
+    private function findVersion(string $id): Version
+    {
+        $model = Version::find()
+            ->andWhere([Version::tableName() . '.[[id]]' => $id])
+            ->andWhere(['not', [Version::tableName() . '.[[status]]' => Version::STATUS_DRAFT]])
+            ->with('item.type')
+            ->one();
+        if ($model === null || $model->item === null) {
+            throw new NotFoundHttpException(Yii::t('knowledge-library', 'The requested version does not exist.'));
+        }
+
+        return $model;
+    }
+
+    /**
+     * Creates the draft of the correction and redirects to step 1 of the
+     * wizard; on failure (archived item, draft or review in progress, state
+     * of the version) to the detail page with the reason as flash message.
+     */
+    private function startCorrection(Version $model, string $reason): Response
+    {
+        if ($model->item->is_archived) {
+            return $this->redirectArchived($model->item);
+        }
+
+        $correction = Version::createCorrection($model, $reason);
+        if ($correction->getIsNewRecord()) {
+            Yii::$app->getSession()->setFlash('error', implode(' ', $correction->getFirstErrors()));
+
+            return $this->redirect(['item/view', 'id' => $model->item_id, 'tab' => ItemController::TAB_VERSIONS]);
+        }
+
+        return $this->redirect(['update', 'id' => $correction->id, 'step' => self::STEP_CONTENT]);
     }
 
     /**

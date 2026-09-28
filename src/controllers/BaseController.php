@@ -41,6 +41,22 @@ abstract class BaseController extends Controller
     }
 
     /**
+     * Whether the current user may use the route `<controller>/<action>` of
+     * the module, checked like the access control of the module
+     * (`AccessBehaviorTrait`).
+     */
+    public function canRoute(string $controllerId, string $actionId): bool
+    {
+        $permission = str_replace(
+            '/',
+            '_',
+            trim($this->module->getUniqueId(), '/') . '_' . $controllerId . '_' . $actionId
+        );
+
+        return Yii::$app->getUser()->can($permission, ['route' => true]);
+    }
+
+    /**
      * Root breadcrumb of all backend pages, linking to the item library.
      */
     public function getRootBreadcrumb(): array
