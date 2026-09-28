@@ -216,6 +216,26 @@ Deleting an item is logged with `Yii::info()` in the category `knowledge-library
 ],
 ```
 
+## Frontend pages
+
+The frontend module shows the content valid today to readers, e.g. as entry point for a crawler that indexes the knowledge items. It is read-only and has no search, no navigation and no view of another date. Routes are relative to the module ID, e.g. `/knowledge/item/index` for the configuration above; the module URL itself (`/knowledge`) opens the list (`defaultRoute` is `item`).
+
+| Route | Purpose |
+| --- | --- |
+| `item/index` | List of the valid items: title as link to the detail page, type and topics, sorted by title and ID, without paging |
+| `item/view` | Detail page of a valid item (`id`) |
+| `file/download` | Download a file (`id`) of the version valid today |
+
+All three routes accept GET only; other methods are answered with 405.
+
+**Visibility.** An item is shown if it is not archived and has a version valid today (`ItemQuery::validAt()`, see "Effective state"): a published version whose validity period contains today, or for types without validity period the published version with the highest number. Drafts, versions in review, historical, upcoming and withdrawn versions are never shown. Today is `date('Y-m-d')` in the time zone of the application. Nothing is cached: publishing, withdrawing, correcting, archiving or restoring changes the pages with the next request.
+
+**Detail page.** The page shows title, type, topics, validity ("Valid from <from> until <until>", "open-ended" without end; "Valid since <publication date>" for types without validity period), source, source reference and source URL (as link), the summary, the text of the valid version rendered as Markdown (`MarkdownHelper::render()`, HTML in the text is shown as text) and its main files and attachments with size and download link. Empty fields are left out. The markup is plain semantic HTML without JavaScript: the list is `<ul class="knowledge-items">`, the detail page `<article class="knowledge-item" data-item-id="...">` with a `<dl>` of the fields and the sections `knowledge-summary`, `knowledge-content` and `knowledge-files`. The views set `$this->title` and the breadcrumbs and are rendered in the layout configured for the module.
+
+**Not found.** Unknown IDs, archived items and items without a version valid today all answer with 404 ("The requested knowledge object does not exist."), without telling the cases apart. The list without valid items answers with 200 and a hint.
+
+**Downloads.** `file/download` delivers only files of the version valid today of an item that is not archived, as download (`Content-Disposition: attachment`) with the original name. Files of any other version (draft, in review, historical, upcoming, withdrawn) and files of archived items answer with 404 ("The requested file does not exist."), as do unknown IDs and missing stored files. The files are read from the file storage of the backend module (`backendModuleId`).
+
 ## Files
 
 Version files are stored in the flysystem filesystem of the component named by `fileStorage` under `<targetPath>/<item-id>/<file-id>.<ext>`, e.g. `knowledge-library/<item-uuid>/<file-uuid>.pdf`. The ID is the UUID of the file row, the extension comes from the original name; the original name (base name only) is kept in the file row together with MIME type, size, position and the SHA-256 hash of the content (`content_hash`). Uploads are read from their temporary file as stream, never loaded into memory as a whole.
@@ -224,7 +244,7 @@ Uploads are checked against `allowedExtensions` (also by the MIME type detected 
 
 A new version takes over the files of its predecessor as new file rows pointing to the same stored file, the storage is not copied. A stored file is deleted only when no file row refers to it anymore: removing a taken-over file from a draft deletes the row only, removing a file uploaded in the draft deletes the stored file as well. Deleting an item deletes all its stored files.
 
-The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file as download (`Content-Disposition: attachment`) with its original name.
+The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file as download (`Content-Disposition: attachment`) with its original name. The frontend module delivers the files of the versions valid today through its own `file/download`, see "Frontend pages".
 
 ## Migrations
 
@@ -324,7 +344,7 @@ Everyone who may open the detail page of an item may also download its files, in
 
 `dmstr\web\User` resolves route permissions by prefix: a permission `knowledge-library` grants every route of the module, `knowledge-library_item` every item action including `delete`. The package therefore creates no such permission; applications should not either unless they want to grant everything below it.
 
-Access to the frontend module is granted by a permission named exactly like its module ID, i.e. `knowledge` for the configuration above.
+Access to the frontend module is granted by a permission named exactly like its module ID, i.e. `knowledge` for the configuration above. The RBAC migrations create the permission `knowledge` without assigning it; through the prefix resolution of `dmstr\web\User` it grants all frontend routes (`knowledge_item_index`, `knowledge_item_view`, `knowledge_file_download`), but no backend route, as `knowledge-library_...` does not start with `knowledge_`. The backend roles do not contain it: the application assigns it to the readers of the frontend, usually through a role of its own. Guests are redirected to the login, logged-in users without the permission get 403.
 
 ## Running tests
 
@@ -333,7 +353,7 @@ composer install
 vendor/bin/phpunit
 ```
 
-The suite `unit` tests the models and migrations on an in-memory SQLite database. The suite `web` runs the backend pages through `Yii::$app->runAction()` in a web application (`tests/WebTestCase.php`) with the RBAC migrations of the package applied, so the route permissions are tested as well.
+The suite `unit` tests the models and migrations on an in-memory SQLite database. The suite `web` runs the backend and frontend pages through `Yii::$app->runAction()` in a web application (`tests/WebTestCase.php`, `tests/FrontendWebTestCase.php`) with the RBAC migrations of the package applied, so the route permissions are tested as well.
 
 GitHub Actions runs both suites on PHP 8.1 to 8.4 for every push to `master` and every pull request (`.github/workflows/tests.yml`).
 
