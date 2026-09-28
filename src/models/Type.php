@@ -2,6 +2,7 @@
 
 namespace dmstr\knowledgeLibrary\models;
 
+use dmstr\knowledgeLibrary\models\query\ItemQuery;
 use dmstr\knowledgeLibrary\models\query\TypeQuery;
 use Yii;
 use yii\db\Query;
@@ -17,6 +18,8 @@ use yii\db\Query;
  * @property string|null $updated_at
  * @property string|null $created_by
  * @property string|null $updated_by
+ *
+ * @property-read Item[] $items
  */
 class Type extends ActiveRecord
 {
@@ -54,6 +57,14 @@ class Type extends ActiveRecord
             'created_by' => Yii::t('knowledge-library', 'Created By'),
             'updated_by' => Yii::t('knowledge-library', 'Updated By'),
         ];
+    }
+
+    public function getItems(): ItemQuery
+    {
+        /** @var ItemQuery $query */
+        $query = $this->hasMany(Item::class, ['type_id' => 'id']);
+
+        return $query;
     }
 
     /**

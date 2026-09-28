@@ -9,6 +9,39 @@ A knowledge library for Yii2 applications. It consists of two modules:
 
 The library stores knowledge **types** and **topics**, knowledge **items**, their content **versions** (each valid for a time range), **files** attached to versions, **relations** between items and a **history** of changes.
 
+| Entity | Model | Purpose |
+| --- | --- | --- |
+| Type | `Type` | Kind of item; defines whether versions have a validity period (`has_validity_period`) and whether publishing requires a review (`requires_review`) |
+| Topic | `Topic` | Keyword; an item can be assigned to several topics (`Item::$topicIds`) |
+| Item | `Item` | The knowledge item with title, summary, source information and archive flag |
+| Version | `Version` | Numbered content version of an item: Markdown text and/or files, validity dates, review and publication data |
+| File | `File` | File of a version in the file storage, either a `main` file (carries the content) or an `attachment` |
+| Relation | `Relation` | Directed relation between two items: `based_on`, `supplements` or `replaces` |
+| History | `History` | Change log entry of an item, optionally for one version |
+
+### Version statuses
+
+- `draft`: being edited, at most one per item; may be empty
+- `in_review`: submitted to a reviewer (`submitForReview()`), at most one per item
+- `published`: released (`publish()`); a draft can be published directly only if its type does not require a review
+- `withdrawn`: no longer valid
+
+Versions in review or published need content: a non-empty text or at least one main file.
+
+### Effective state
+
+A published version has an effective state at a given date (`Version::getEffectiveState()`):
+
+- `in_force`: valid at the date
+- `upcoming`: starts after the date
+- `historical`: ended before the date, or superseded
+
+For types **with** a validity period a version is valid from `valid_from` until `valid_until` (open-ended if empty). A new version must start strictly after the latest published version; publishing it ends the predecessor the day before, unless the predecessor already ends earlier (gaps are allowed). Corrections (`corrects_version_id`) are exempt from this rule.
+
+For types **without** a validity period versions have no dates; the published version with the highest number is in force, all older ones are historical.
+
+`Version::find()->validAt($date)` returns the valid version of each item at a date, at most one per item; `Item::getValidVersion()` returns it for one item.
+
 ## Requirements
 
 - PHP 8.1 or later

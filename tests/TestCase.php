@@ -2,8 +2,11 @@
 
 namespace dmstr\knowledgeLibrary\tests;
 
+use dmstr\knowledgeLibrary\models\File;
+use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\Topic;
 use dmstr\knowledgeLibrary\models\Type;
+use dmstr\knowledgeLibrary\models\Version;
 use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\users\UserProviderInterface;
 use m260928_100100_knowledge_library_schema;
@@ -116,5 +119,72 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         ])->execute();
 
         return $id;
+    }
+
+    /**
+     * Creates a knowledge item, with a new type unless `type_id` is given.
+     */
+    protected function createItem(array $attributes = []): Item
+    {
+        if (!isset($attributes['type_id'])) {
+            $attributes['type_id'] = $this->createType()->id;
+        }
+
+        $item = new Item();
+        if (array_key_exists('topicIds', $attributes)) {
+            // Virtual attribute, not covered by setAttributes() with safeOnly = false.
+            $item->topicIds = $attributes['topicIds'];
+            unset($attributes['topicIds']);
+        }
+        $item->setAttributes(array_merge(['title' => 'Item ' . uniqid()], $attributes), false);
+        $this->assertTrue($item->save(), 'Item not saved: ' . json_encode($item->getErrors()));
+
+        return $item;
+    }
+
+    /**
+     * Creates a version of the item, a draft with content by default.
+     */
+    protected function createVersion(Item $item, array $attributes = []): Version
+    {
+        $version = new Version();
+        $version->setAttributes(array_merge([
+            'item_id' => $item->id,
+            'status' => Version::STATUS_DRAFT,
+            'content' => 'Content',
+        ], $attributes), false);
+        $this->assertTrue($version->save(), 'Version not saved: ' . json_encode($version->getErrors()));
+
+        return $version;
+    }
+
+    /**
+     * Creates a draft of the item and publishes it via review.
+     */
+    protected function createPublishedVersion(Item $item, array $attributes = []): Version
+    {
+        $version = $this->createVersion($item, $attributes);
+        $this->assertTrue(
+            $version->submitForReview('user-2'),
+            'Version not submitted: ' . json_encode($version->getErrors())
+        );
+        $this->assertTrue($version->publish(), 'Version not published: ' . json_encode($version->getErrors()));
+
+        return $version;
+    }
+
+    protected function createFile(Version $version, array $attributes = []): File
+    {
+        $file = new File();
+        $file->setAttributes(array_merge([
+            'version_id' => $version->id,
+            'kind' => File::KIND_ATTACHMENT,
+            'storage_id' => 'fs',
+            'path' => 'knowledge-library/' . uniqid() . '.pdf',
+            'name' => 'document.pdf',
+        ], $attributes), false);
+        $this->assertTrue($file->save(), 'File not saved: ' . json_encode($file->getErrors()));
+
+        return $file;
     }
 }
