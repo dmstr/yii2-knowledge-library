@@ -25,6 +25,11 @@ use Yii;
  *
  * getPreview() returns the timeline data of the item as it would look after
  * publishing, in the format of timeline(); see ValidityTimeline.
+ *
+ * A correction (see Version::createCorrection()) is checked differently: it
+ * takes over the validity period of the corrected version, the entered dates
+ * are ignored and there are no errors. Publishing it withdraws the corrected
+ * version; getPastHint() describes whether this changes the past.
  */
 class ValidityCheck
 {
@@ -47,6 +52,11 @@ class ValidityCheck
     private string $today;
 
     private ?Version $predecessor;
+
+    /**
+     * Version corrected by the checked version, null if it is no correction.
+     */
+    private ?Version $corrected = null;
 
     private bool $hasValidityPeriod;
 
@@ -83,8 +93,13 @@ class ValidityCheck
         $this->predecessor = $version->getPredecessor();
         $type = $version->item instanceof Item ? $version->item->type : null;
         $this->hasValidityPeriod = $type === null || (bool)$type->has_validity_period;
+        if ($version->isCorrection()) {
+            $this->corrected = $version->correctedVersion;
+        }
 
-        if ($this->hasValidityPeriod) {
+        if ($this->corrected !== null) {
+            $this->checkCorrection();
+        } elseif ($this->hasValidityPeriod) {
             $this->checkPeriod();
         } else {
             $this->checkWithoutPeriod();
@@ -118,6 +133,69 @@ class ValidityCheck
     }
 
     /**
+     * Whether the checked version is a correction of an existing version.
+     */
+    public function isCorrection(): bool
+    {
+        return $this->corrected !== null;
+    }
+
+    /**
+     * The version corrected by the checked version, null if it is no
+     * correction.
+     */
+    public function getCorrectedVersion(): ?Version
+    {
+        return $this->corrected;
+    }
+
+    /**
+     * First and last year of the past a correction changes: from the year of
+     * Valid From to the year of Valid Until, at most the current year. Null
+     * if the checked version is no correction, the type has no validity
+     * period or the period starts today or later.
+     *
+     * @return array{0: int, 1: int}|null
+     */
+    public function getPastYears(): ?array
+    {
+        if ($this->corrected === null || !$this->hasValidityPeriod || $this->validFrom === null) {
+            return null;
+        }
+        if ($this->validFrom >= $this->today) {
+            return null;
+        }
+
+        $end = $this->validUntil === null ? $this->today : min($this->validUntil, $this->today);
+
+        return [(int)substr($this->validFrom, 0, 4), (int)substr($end, 0, 4)];
+    }
+
+    /**
+     * Hint for a correction changing the past, e.g. "Changes the answers to
+     * questions about 2025 to 2026.", null if it does not; see getPastYears().
+     */
+    public function getPastHint(): ?string
+    {
+        $years = $this->getPastYears();
+        if ($years === null) {
+            return null;
+        }
+
+        [$first, $last] = $years;
+        if ($first === $last) {
+            return Yii::t('knowledge-library', 'Changes the answers to questions about {year}.', [
+                'year' => (string)$first,
+            ]);
+        }
+
+        return Yii::t('knowledge-library', 'Changes the answers to questions about {from} to {until}.', [
+            'from' => (string)$first,
+            'until' => (string)$last,
+        ]);
+    }
+
+    /**
      * Start of the new version (`Y-m-d`): the entered date, today for types
      * without validity period, null if invalid.
      */
@@ -140,6 +218,10 @@ class ValidityCheck
      * `hl`), the new version is added with state `neu`. Without the new
      * version if the check failed.
      *
+     * For a correction the corrected version is shown as withdrawn (`zur`,
+     * lane 1) and the correction as `neu` in the same period; no other
+     * version changes.
+     *
      * @return array{y0: int, y1: int, v: array<int, array{n: int, a: string, b: string|null, s: string, hl: bool, lane: int}>}
      */
     public function getPreview(): array
@@ -147,7 +229,26 @@ class ValidityCheck
         $item = $this->version->item;
         $bars = $item instanceof Item ? static::bars($item, $this->today, $this->version->id) : [];
 
-        if ($this->isValid()) {
+        if ($this->corrected !== null) {
+            foreach ($bars as &$bar) {
+                if ($bar['n'] === (int)$this->corrected->number) {
+                    $bar['s'] = self::STATE_WITHDRAWN;
+                    $bar['lane'] = 1;
+                }
+            }
+            unset($bar);
+
+            if ($this->validFrom !== null) {
+                $bars[] = [
+                    'n' => $this->getNumber(),
+                    'a' => $this->validFrom,
+                    'b' => $this->validUntil,
+                    's' => self::STATE_NEW,
+                    'hl' => false,
+                    'lane' => 0,
+                ];
+            }
+        } elseif ($this->isValid()) {
             $predecessorEnd = $this->shiftDate($this->validFrom, -1);
             foreach ($bars as &$bar) {
                 if (
@@ -288,15 +389,55 @@ class ValidityCheck
             }
         }
 
-        $this->consequences[] = $validUntil === null
+        $this->consequences[] = $this->periodConsequence();
+    }
+
+    /**
+     * Correction: the period of the corrected version applies, the corrected
+     * version is withdrawn. No errors, see the class description.
+     */
+    private function checkCorrection(): void
+    {
+        if ($this->hasValidityPeriod) {
+            $this->validFrom = $this->corrected->valid_from;
+            $this->validUntil = $this->corrected->valid_until;
+        } else {
+            $this->validFrom = $this->today;
+        }
+
+        $this->consequences[] = Yii::t('knowledge-library', 'Version {number} is withdrawn.', [
+            'number' => (int)$this->corrected->number,
+        ]);
+        if ($this->validFrom !== null) {
+            $this->consequences[] = $this->periodConsequence();
+        }
+    }
+
+    /**
+     * Consequence describing the period of the new version, e.g. "Version 3
+     * is valid from 01.03.2026, open-ended."
+     */
+    private function periodConsequence(): string
+    {
+        $formatter = Yii::$app->formatter;
+
+        if (!$this->hasValidityPeriod) {
+            return Yii::t(
+                'knowledge-library',
+                'Version {number} is valid from publication, open-ended.',
+                ['number' => $this->getNumber()]
+            );
+        }
+
+        return $this->validUntil === null
             ? Yii::t('knowledge-library', 'Version {number} is valid from {from}, open-ended.', [
                 'number' => $this->getNumber(),
-                'from' => $formatter->asDate($validFrom),
+                'from' => $formatter->asDate($this->validFrom),
             ])
             : Yii::t('knowledge-library', 'Version {number} is valid from {from} until {until}.', [
                 'number' => $this->getNumber(),
-                'from' => $formatter->asDate($validFrom),
-                'until' => $formatter->asDate($validUntil),
+                'from' => $formatter->asDate($this->validFrom),
+                'until' => $formatter->asDate($this->validUntil),
             ]);
     }
 
@@ -320,11 +461,7 @@ class ValidityCheck
                 ['number' => $this->getNumber(), 'predecessor' => (int)$this->predecessor->number]
             );
         }
-        $this->consequences[] = Yii::t(
-            'knowledge-library',
-            'Version {number} is valid from publication, open-ended.',
-            ['number' => $this->getNumber()]
-        );
+        $this->consequences[] = $this->periodConsequence();
     }
 
     /**

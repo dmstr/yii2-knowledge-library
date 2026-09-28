@@ -76,6 +76,21 @@ class ItemQuery extends ActiveQuery
     }
 
     /**
+     * Only items with a version in review by the given reviewer (user
+     * reference), e.g. for the filter "Awaiting my approval" and its counter.
+     */
+    public function awaitingReviewBy(string $reviewerId): static
+    {
+        return $this->andWhere(['exists', (new Query())
+            ->from(['kl_review_version' => Version::tableName()])
+            ->where(new Expression('[[kl_review_version.item_id]] = ' . $this->qualify('id')))
+            ->andWhere([
+                'kl_review_version.status' => Version::STATUS_IN_REVIEW,
+                'kl_review_version.reviewer_id' => $reviewerId,
+            ])]);
+    }
+
+    /**
      * Adds the column `lastChange`: the most recent `updated_at` of the item
      * and its versions, the item's own value if it has no versions.
      *

@@ -4,6 +4,7 @@ namespace dmstr\knowledgeLibrary\tests\unit;
 
 use dmstr\knowledgeLibrary\models\Item;
 use dmstr\knowledgeLibrary\models\search\ItemSearch;
+use dmstr\knowledgeLibrary\tests\support\DummyUserProvider;
 use dmstr\knowledgeLibrary\tests\TestCase;
 use Yii;
 
@@ -186,6 +187,55 @@ class ItemSearchTest extends TestCase
         $search = new ItemSearch();
         $search->search(['ItemSearch' => ['title' => '  ', 'type_id' => '', 'topicIds' => '', 'archived' => 'active']]);
         $this->assertFalse($search->isFiltered());
+    }
+
+    public function testReviewFilterShowsItemsAwaitingMyReview(): void
+    {
+        $mine = $this->createItem();
+        $this->assertTrue($this->createVersion($mine, ['valid_from' => '2026-01-01'])->submitForReview('user-2'));
+        $other = $this->createItem();
+        $this->assertTrue($this->createVersion($other, ['valid_from' => '2026-01-01'])->submitForReview('user-3'));
+        // Published versions reviewed by user-2 do not count.
+        $published = $this->createItem();
+        $this->createPublishedVersion($published, ['valid_from' => '2026-01-01']);
+        $this->createItem();
+
+        DummyUserProvider::$currentReference = 'user-2';
+
+        $this->assertSame([$mine->id], $this->searchIds(['review' => ItemSearch::REVIEW_MINE]));
+        $this->assertCount(4, $this->searchIds(['review' => ItemSearch::REVIEW_ALL]));
+        $this->assertSame('1', (string)Item::find()->awaitingReviewBy('user-2')->count());
+        $this->assertSame('1', (string)Item::find()->awaitingReviewBy('user-3')->count());
+        $this->assertSame('0', (string)Item::find()->awaitingReviewBy('user-1')->count());
+
+        $search = new ItemSearch();
+        $search->search(['ItemSearch' => ['review' => 'mine']]);
+        $this->assertTrue($search->isFiltered());
+    }
+
+    public function testReviewFilterWithoutCurrentUserFindsNothing(): void
+    {
+        $item = $this->createItem();
+        $this->assertTrue($this->createVersion($item, ['valid_from' => '2026-01-01'])->submitForReview('user-2'));
+
+        DummyUserProvider::$currentReference = null;
+
+        $this->assertSame([], $this->searchIds(['review' => ItemSearch::REVIEW_MINE]));
+        $this->assertSame([$item->id], $this->searchIds());
+    }
+
+    public function testInvalidReviewFilterFallsBackToAll(): void
+    {
+        $item = $this->createItem();
+
+        foreach (['others', ['mine'], 'MINE'] as $value) {
+            $search = new ItemSearch();
+            $provider = $search->search(['ItemSearch' => ['review' => $value]]);
+
+            $this->assertSame(ItemSearch::REVIEW_ALL, $search->review, json_encode($value));
+            $this->assertFalse($search->isFiltered());
+            $this->assertSame([$item->id], array_map(static fn (Item $model) => $model->id, $provider->getModels()));
+        }
     }
 
     public function testArchivedOptions(): void

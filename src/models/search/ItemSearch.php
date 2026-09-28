@@ -3,6 +3,7 @@
 namespace dmstr\knowledgeLibrary\models\search;
 
 use dmstr\knowledgeLibrary\models\Item;
+use dmstr\knowledgeLibrary\users\DefaultUserProvider;
 use Yii;
 use yii\base\Model;
 use yii\data\ActiveDataProvider;
@@ -18,6 +19,13 @@ class ItemSearch extends Item
     public const ARCHIVED_ACTIVE = 'active';
     public const ARCHIVED_ARCHIVED = 'archived';
     public const ARCHIVED_ALL = 'all';
+
+    /**
+     * Values of the review filter: all items, or only items with a version in
+     * review by the current user.
+     */
+    public const REVIEW_ALL = '';
+    public const REVIEW_MINE = 'mine';
 
     public const PAGE_SIZE = 20;
 
@@ -40,6 +48,12 @@ class ItemSearch extends Item
      * @var string one of the ARCHIVED_* constants
      */
     public $archived = self::ARCHIVED_ACTIVE;
+
+    /**
+     * @var string one of the REVIEW_* constants; `mine` finds nothing without
+     * a current user reference
+     */
+    public $review = self::REVIEW_ALL;
 
     /**
      * @return array<string, string> map `archived filter => label`
@@ -74,6 +88,8 @@ class ItemSearch extends Item
             ],
             ['topicIds', 'each', 'rule' => ['string']],
             ['archived', 'in', 'range' => array_keys(static::archivedOptions())],
+            ['review', 'default', 'value' => self::REVIEW_ALL],
+            ['review', 'in', 'range' => [self::REVIEW_ALL, self::REVIEW_MINE], 'strict' => true],
         ];
     }
 
@@ -104,6 +120,15 @@ class ItemSearch extends Item
             ->withFilters($this->title, $this->type_id, $this->topicIds, $archived)
             ->withLastChange()
             ->with(['type', 'topics']);
+
+        if ($this->review === self::REVIEW_MINE) {
+            $reviewer = DefaultUserProvider::resolve()->getCurrentUserReference();
+            if ($reviewer === null || $reviewer === '') {
+                $query->andWhere('0 = 1');
+            } else {
+                $query->awaitingReviewBy($reviewer);
+            }
+        }
 
         $id = Item::tableName() . '.[[id]]';
 
@@ -140,7 +165,8 @@ class ItemSearch extends Item
         return ($this->title !== null && $this->title !== '')
             || ($this->type_id !== null && $this->type_id !== '')
             || $this->topicIds !== []
-            || $this->archived !== self::ARCHIVED_ACTIVE;
+            || $this->archived !== self::ARCHIVED_ACTIVE
+            || $this->review !== self::REVIEW_ALL;
     }
 
     /**
@@ -158,6 +184,7 @@ class ItemSearch extends Item
             'type_id' => null,
             'topicIds' => [],
             'archived' => self::ARCHIVED_ACTIVE,
+            'review' => self::REVIEW_ALL,
         ];
         foreach (array_keys($this->getErrors()) as $attribute) {
             if (array_key_exists($attribute, $defaults)) {

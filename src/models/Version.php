@@ -7,6 +7,7 @@ use dmstr\knowledgeLibrary\models\query\VersionQuery;
 use dmstr\knowledgeLibrary\users\DefaultUserProvider;
 use Throwable;
 use Yii;
+use yii\base\InvalidArgumentException;
 use yii\db\ActiveQuery;
 
 /**
@@ -87,6 +88,13 @@ class Version extends ActiveRecord
     public const CONTENT_CHANGED = 'changed';
     public const CONTENT_UNCHANGED = 'unchanged';
     public const CONTENT_NONE = 'none';
+
+    /**
+     * What applies instead of a withdrawn version, see withdraw().
+     */
+    public const WITHDRAW_PREVIOUS = 'previous';
+    public const WITHDRAW_CORRECTION = 'correction';
+    public const WITHDRAW_NONE = 'none';
 
     private const DATE_FORMAT = 'Y-m-d';
     private const DATETIME_FORMAT = 'Y-m-d H:i:s';
@@ -279,8 +287,18 @@ class Version extends ActiveRecord
     }
 
     /**
+     * Message for a correction whose dates differ from the corrected version.
+     */
+    public static function correctionPeriodMessage(): string
+    {
+        return Yii::t('knowledge-library', 'A correction keeps the validity period of the corrected version.');
+    }
+
+    /**
      * Checks the validity dates against the type of the item and the latest
-     * published version.
+     * published version. A correction is not checked against the latest
+     * published version, its dates must equal those of the corrected
+     * version instead (until it is published).
      */
     public function validateValidityPeriod(): void
     {
@@ -306,6 +324,18 @@ class Version extends ActiveRecord
         $validFrom = $this->valid_from === '' ? null : $this->valid_from;
         $validUntil = $this->valid_until === '' ? null : $this->valid_until;
 
+        if ($this->isCorrection() && !$this->isPublishedInDatabase()) {
+            $corrected = $this->correctedVersion;
+            if (
+                $corrected !== null
+                && ($validFrom !== $corrected->valid_from || $validUntil !== $corrected->valid_until)
+            ) {
+                $this->addError('valid_from', static::correctionPeriodMessage());
+
+                return;
+            }
+        }
+
         if ($validFrom === null) {
             if (in_array($this->status, [self::STATUS_IN_REVIEW, self::STATUS_PUBLISHED], true)) {
                 $this->addError(
@@ -321,7 +351,7 @@ class Version extends ActiveRecord
             $this->addError('valid_until', ValidityCheck::untilBeforeFromMessage());
         }
 
-        if (!$this->isPublishedInDatabase() && empty($this->corrects_version_id)) {
+        if (!$this->isPublishedInDatabase() && !$this->isCorrection()) {
             $latest = $this->findLatestPublishedSibling();
             if ($latest !== null && $latest->valid_from !== null && $validFrom <= $latest->valid_from) {
                 $this->addError('valid_from', ValidityCheck::retroactiveMessage($latest));
@@ -340,6 +370,22 @@ class Version extends ActiveRecord
         }
 
         return true;
+    }
+
+    /**
+     * Discarding the draft of a correction clears the reason stored in
+     * `withdraw_reason` of the corrected version, see createCorrection().
+     */
+    public function afterDelete()
+    {
+        parent::afterDelete();
+
+        if ($this->isCorrection() && in_array($this->status, [self::STATUS_DRAFT, self::STATUS_IN_REVIEW], true)) {
+            static::updateAll(
+                ['withdraw_reason' => null],
+                ['id' => $this->corrects_version_id, 'status' => self::STATUS_PUBLISHED]
+            );
+        }
     }
 
     public function getItem(): ActiveQuery
@@ -512,6 +558,182 @@ class Version extends ActiveRecord
     }
 
     /**
+     * Creates the draft of a correction of the given published version.
+     *
+     * The correction starts as copy of the corrected version: text, files
+     * (see File::copyToVersion()) and validity period; title, summary and
+     * topics are taken from the item, as for createDraft(). The validity
+     * period cannot be changed, see validateValidityPeriod(). Publishing the
+     * correction withdraws the corrected version, see publish().
+     *
+     * The reason is stored in `withdraw_reason` of the corrected version
+     * until the correction is published, and cleared when the draft of the
+     * correction is deleted (discarded), see afterDelete().
+     *
+     * Only allowed as long as canCorrect() is true. Otherwise, and if saving
+     * fails, the returned version is not saved (`getIsNewRecord()` is true)
+     * and carries the errors (attribute `status` for the rules).
+     */
+    public static function createCorrection(self $corrected, ?string $reason = null): self
+    {
+        $item = $corrected->item;
+        if (!$item instanceof Item) {
+            throw new InvalidArgumentException('The corrected version has no item.');
+        }
+
+        $error = $corrected->correctionError();
+        if ($error !== null) {
+            $correction = static::rejectedDraft($item, $error);
+            $correction->corrects_version_id = $corrected->id;
+
+            return $correction;
+        }
+
+        $correction = new static();
+        $correction->item_id = $item->id;
+        $correction->status = self::STATUS_DRAFT;
+        $correction->corrects_version_id = $corrected->id;
+        $correction->populateRelation('item', $item);
+        $correction->populateRelation('correctedVersion', $corrected);
+        $correction->content = $corrected->content;
+        $correction->valid_from = $corrected->valid_from;
+        $correction->valid_until = $corrected->valid_until;
+        $correction->draft_title = $item->title;
+        $correction->draft_summary = $item->summary;
+        $correction->setDraftTopicIds($item->getTopicIds());
+
+        $reason = $reason === null || trim($reason) === '' ? null : trim($reason);
+
+        $transaction = static::getDb()->beginTransaction();
+        try {
+            if (!$correction->save()) {
+                $transaction->rollBack();
+
+                return $correction;
+            }
+
+            foreach ($corrected->files as $file) {
+                $copy = $file->copyToVersion($correction);
+                if ($copy->hasErrors()) {
+                    $transaction->rollBack();
+                    $correction->setIsNewRecord(true);
+                    $correction->addError('item_id', implode(' ', $copy->getFirstErrors()));
+
+                    return $correction;
+                }
+            }
+
+            $corrected->updateAttributes(['withdraw_reason' => $reason]);
+
+            $transaction->commit();
+        } catch (Throwable $e) {
+            $transaction->rollBack();
+
+            throw $e;
+        }
+
+        unset($correction->files, $correction->mainFiles, $correction->attachments);
+
+        return $correction;
+    }
+
+    /**
+     * Whether this version corrects another version (`corrects_version_id`).
+     */
+    public function isCorrection(): bool
+    {
+        return $this->corrects_version_id !== null && $this->corrects_version_id !== '';
+    }
+
+    /**
+     * Whether this version can be corrected now, see createCorrection().
+     */
+    public function canCorrect(): bool
+    {
+        return $this->correctionError() === null;
+    }
+
+    /**
+     * Whether this version can be withdrawn now, see withdraw().
+     *
+     * @param string|null $date date in the format `Y-m-d`, today if null
+     */
+    public function canWithdraw(?string $date = null): bool
+    {
+        return $this->withdrawalError($date) === null;
+    }
+
+    /**
+     * Why this version cannot be corrected, null if it can.
+     *
+     * Any published version can be corrected, unless the item is archived or
+     * has a draft or a version in review. For types without validity period
+     * only the version in force can be corrected: there the published version
+     * with the highest number is valid, so the correction of an older version
+     * would silently replace the version in force.
+     */
+    private function correctionError(): ?string
+    {
+        if ($this->status !== self::STATUS_PUBLISHED) {
+            return Yii::t('knowledge-library', 'Only a published version can be corrected.');
+        }
+
+        $item = $this->item;
+        if ($item instanceof Item && $item->is_archived) {
+            return Item::archivedMessage();
+        }
+
+        $statuses = static::find()
+            ->select('status')
+            ->forItem($this->item_id)
+            ->andWhere(['status' => [self::STATUS_DRAFT, self::STATUS_IN_REVIEW]])
+            ->column();
+        if (in_array(self::STATUS_DRAFT, $statuses, true)) {
+            return Yii::t('knowledge-library', 'This item already has a draft.');
+        }
+        if (in_array(self::STATUS_IN_REVIEW, $statuses, true)) {
+            return Yii::t('knowledge-library', 'This item already has a version in review.');
+        }
+
+        $type = $this->getItemType();
+        if ($type !== null && !$type->has_validity_period && $this->getEffectiveState() !== self::STATE_IN_FORCE) {
+            return Yii::t(
+                'knowledge-library',
+                'Only the version in force can be corrected, as this type has no validity period.'
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Why this version cannot be withdrawn, null if it can: only a published
+     * version in force or upcoming at the date can be withdrawn, and not
+     * while a correction of it is in progress.
+     *
+     * @param string|null $date date in the format `Y-m-d`, today if null
+     */
+    private function withdrawalError(?string $date = null): ?string
+    {
+        if (!in_array($this->getEffectiveState($date), [self::STATE_IN_FORCE, self::STATE_UPCOMING], true)) {
+            return Yii::t('knowledge-library', 'Only a version in force or an upcoming version can be withdrawn.');
+        }
+
+        $correctionInProgress = static::find()
+            ->forItem($this->item_id)
+            ->andWhere([
+                'corrects_version_id' => $this->id,
+                'status' => [self::STATUS_DRAFT, self::STATUS_IN_REVIEW],
+            ])
+            ->exists();
+        if ($correctionInProgress) {
+            return Yii::t('knowledge-library', 'A correction of this version is in progress.');
+        }
+
+        return null;
+    }
+
+    /**
      * Suggested Valid From of a new version: the day after the start of the
      * predecessor, at least today; today without predecessor. Null for types
      * without validity period.
@@ -550,9 +772,10 @@ class Version extends ActiveRecord
     }
 
     /**
-     * Text compared to the predecessor: `changed`, `unchanged` or `none` if
-     * this version has no text. Line endings and surrounding whitespace are
-     * ignored; without predecessor any text counts as changed.
+     * Text compared to the predecessor (for a correction: the corrected
+     * version): `changed`, `unchanged` or `none` if this version has no text.
+     * Line endings and surrounding whitespace are ignored; without
+     * predecessor any text counts as changed.
      */
     public function getContentChange(): string
     {
@@ -561,7 +784,7 @@ class Version extends ActiveRecord
             return self::CONTENT_NONE;
         }
 
-        $predecessor = $this->getPredecessor();
+        $predecessor = $this->isCorrection() ? $this->correctedVersion : $this->getPredecessor();
         if ($predecessor !== null && static::normalizeText($predecessor->content) === $text) {
             return self::CONTENT_UNCHANGED;
         }
@@ -648,7 +871,8 @@ class Version extends ActiveRecord
      *
      * Four-eyes principle: the reviewer must be one of the reviewer options of
      * the user provider and must not be the current user. A previous return
-     * (`return_note`, `returned_by`, `returned_at`) is cleared. Writes the
+     * (`return_note`, `returned_by`, `returned_at`) is cleared. A correction
+     * takes over the current period of the corrected version. Writes the
      * history entry `review_requested` with the message as reason.
      *
      * @return bool whether the version was saved; see the errors otherwise
@@ -693,7 +917,11 @@ class Version extends ActiveRecord
             'return_note' => null,
             'returned_by' => null,
             'returned_at' => null,
-        ], null, fn () => $this->log(History::ACTION_REVIEW_REQUESTED, $message, ['reviewer' => $reviewerId]));
+        ] + $this->correctionPeriod(), null, fn () => $this->log(
+            History::ACTION_REVIEW_REQUESTED,
+            $message,
+            ['reviewer' => $reviewerId]
+        ));
     }
 
     /**
@@ -711,6 +939,10 @@ class Version extends ActiveRecord
      *
      * Writes the history entry `published`, for a version in review preceded
      * by `approved`.
+     *
+     * A correction (see createCorrection()) withdraws the corrected version
+     * instead of ending the predecessor and writes the history entry
+     * `corrected` instead of `published`.
      *
      * @return bool whether the version was saved; see the errors otherwise
      */
@@ -829,8 +1061,155 @@ class Version extends ActiveRecord
     }
 
     /**
+     * Withdraws a published version that is in force or upcoming, see
+     * canWithdraw(). Also allowed for archived items.
+     *
+     * The successor says what applies instead:
+     *
+     * - `previous`: the previous version, see getPreviousForWithdrawal(),
+     *   which must exist. For types with validity period its Valid Until is
+     *   set to the Valid Until of the withdrawn version (null: open-ended),
+     *   so it covers the withdrawn period. For types without validity period
+     *   the newest remaining published version is valid anyway, the choice
+     *   only documents that in the history, no other data is changed.
+     * - `none`: no version applies in the withdrawn period. For types without
+     *   validity period this is only possible without previous version, as
+     *   the previous version becomes valid anyway (see VersionQuery::validAt()).
+     * - `correction` is not handled here: the version stays published until
+     *   its correction is published, see createCorrection().
+     *
+     * If `$previous` is given (the version the user saw as previous version),
+     * it must still be the previous version.
+     *
+     * Sets `withdrawn_by`, `withdrawn_at` and `withdraw_reason` and writes the
+     * history entry `withdrawn` with the reason and, for `previous`, the
+     * number of the previous version as detail `successor`.
+     *
+     * Errors: `status` (state of the version), `withdraw_reason` (reason
+     * missing), `successor` (invalid successor).
+     *
+     * @return bool whether the version was withdrawn; see the errors otherwise
+     */
+    public function withdraw(string $reason, string $successor, ?self $previous = null): bool
+    {
+        $error = $this->withdrawalError();
+        if ($error !== null) {
+            $this->addError('status', $error);
+
+            return false;
+        }
+
+        $reason = trim($reason);
+        if ($reason === '') {
+            $this->addError('withdraw_reason', Yii::t('knowledge-library', 'Enter a reason for the withdrawal.'));
+
+            return false;
+        }
+
+        if ($successor === self::WITHDRAW_CORRECTION) {
+            $this->addError(
+                'successor',
+                Yii::t('knowledge-library', 'A correction withdraws this version when it is published.')
+            );
+
+            return false;
+        }
+        if (!in_array($successor, [self::WITHDRAW_PREVIOUS, self::WITHDRAW_NONE], true)) {
+            $this->addError('successor', Yii::t('knowledge-library', 'Select what applies instead.'));
+
+            return false;
+        }
+
+        $type = $this->getItemType();
+        $hasValidityPeriod = $type === null || (bool)$type->has_validity_period;
+        $actualPrevious = $this->getPreviousForWithdrawal();
+
+        if ($successor === self::WITHDRAW_PREVIOUS) {
+            if ($actualPrevious === null) {
+                $this->addError('successor', Yii::t('knowledge-library', 'There is no previous version.'));
+
+                return false;
+            }
+            if ($previous !== null && $previous->id !== $actualPrevious->id) {
+                $this->addError('successor', Yii::t('knowledge-library', 'The previous version has changed meanwhile.'));
+
+                return false;
+            }
+        } elseif (!$hasValidityPeriod && $actualPrevious !== null) {
+            $this->addError('successor', Yii::t(
+                'knowledge-library',
+                'Version {number} remains valid, as this type has no validity period.',
+                ['number' => (int)$actualPrevious->number]
+            ));
+
+            return false;
+        }
+
+        $extendPrevious = $successor === self::WITHDRAW_PREVIOUS && $hasValidityPeriod;
+
+        return $this->transition(
+            [
+                'status' => self::STATUS_WITHDRAWN,
+                'withdrawn_by' => DefaultUserProvider::resolve()->getCurrentUserReference(),
+                'withdrawn_at' => date(self::DATETIME_FORMAT),
+                'withdraw_reason' => $reason,
+            ],
+            $extendPrevious ? fn () => $this->extendPrevious($actualPrevious) : null,
+            fn () => $this->log(
+                History::ACTION_WITHDRAWN,
+                $reason,
+                $successor === self::WITHDRAW_PREVIOUS ? ['successor' => (int)$actualPrevious->number] : null
+            )
+        );
+    }
+
+    /**
+     * The version that applies again if this version is withdrawn, null if
+     * none.
+     *
+     * For types with validity period: the published version (except this
+     * one) with the latest Valid From before the Valid From of this version.
+     * For types without validity period: the published version with the
+     * highest number below the number of this version.
+     */
+    public function getPreviousForWithdrawal(): ?self
+    {
+        if (empty($this->item_id)) {
+            return null;
+        }
+
+        $query = static::find()
+            ->published()
+            ->forItem($this->item_id)
+            ->andWhere(['not', ['id' => $this->id]])
+            ->limit(1);
+
+        $type = $this->getItemType();
+        if ($type !== null && !$type->has_validity_period) {
+            return $query
+                ->andWhere(['<', 'number', (int)$this->number])
+                ->orderBy(['number' => SORT_DESC])
+                ->one();
+        }
+
+        if ($this->valid_from === null || $this->valid_from === '') {
+            return null;
+        }
+
+        return $query
+            ->andWhere(['<', 'valid_from', $this->valid_from])
+            ->orderBy(['valid_from' => SORT_DESC, 'number' => SORT_DESC])
+            ->one();
+    }
+
+    /**
      * Publishes the version, see publish(); the note is the reason of the
      * history entry `approved` of a version in review.
+     *
+     * A correction takes over the (current) validity period of the corrected
+     * version and withdraws it instead of ending the predecessor; the history
+     * entry `corrected` (with the reason stored in the corrected version)
+     * replaces the entry `published`.
      */
     private function publishVersion(?string $note): bool
     {
@@ -863,20 +1242,110 @@ class Version extends ActiveRecord
             return false;
         }
 
-        return $this->transition([
+        $attributes = [
             'status' => self::STATUS_PUBLISHED,
             'published_by' => DefaultUserProvider::resolve()->getCurrentUserReference(),
             'published_at' => date(self::DATETIME_FORMAT),
-        ], fn () => $this->endPredecessor() && $this->applyDraftDetails(), function () use ($inReview, $note) {
-            if ($inReview) {
-                $this->log(History::ACTION_APPROVED, $note, ['reviewer' => $this->reviewer_id]);
+        ];
+
+        $corrected = null;
+        if ($this->isCorrection()) {
+            $corrected = static::findOne($this->corrects_version_id);
+            if ($corrected === null || $corrected->status !== self::STATUS_PUBLISHED) {
+                $this->addError(
+                    'status',
+                    Yii::t('knowledge-library', 'The corrected version is no longer published.')
+                );
+
+                return false;
             }
-            $this->log(
-                History::ACTION_PUBLISHED,
-                null,
-                $this->valid_from !== null ? ['valid_from' => $this->valid_from] : null
-            );
-        });
+            $this->populateRelation('correctedVersion', $corrected);
+            $attributes += $this->correctionPeriod();
+        }
+
+        return $this->transition(
+            $attributes,
+            fn () => ($corrected !== null ? $this->withdrawCorrected($corrected) : $this->endPredecessor())
+                && $this->applyDraftDetails(),
+            function () use ($inReview, $note, $corrected) {
+                if ($inReview) {
+                    $this->log(History::ACTION_APPROVED, $note, ['reviewer' => $this->reviewer_id]);
+                }
+                if ($corrected !== null) {
+                    History::log($this->item, History::ACTION_CORRECTED, $corrected, $corrected->withdraw_reason, [
+                        'number' => (int)$corrected->number,
+                        'correction' => (int)$this->number,
+                    ]);
+
+                    return;
+                }
+                $this->log(
+                    History::ACTION_PUBLISHED,
+                    null,
+                    $this->valid_from !== null ? ['valid_from' => $this->valid_from] : null
+                );
+            }
+        );
+    }
+
+    /**
+     * Current validity period of the corrected version as attributes of this
+     * version, empty if this version is no correction. The period of the
+     * corrected version may have changed since the correction was created,
+     * e.g. by the withdrawal of a later version, so submitting and publishing
+     * take it over again.
+     *
+     * @return array{valid_from?: string|null, valid_until?: string|null}
+     */
+    private function correctionPeriod(): array
+    {
+        if (!$this->isCorrection()) {
+            return [];
+        }
+
+        $corrected = static::findOne($this->corrects_version_id);
+        if ($corrected === null) {
+            return [];
+        }
+        $this->populateRelation('correctedVersion', $corrected);
+
+        return ['valid_from' => $corrected->valid_from, 'valid_until' => $corrected->valid_until];
+    }
+
+    /**
+     * Withdraws the version corrected by this version on publication; the
+     * reason stored by createCorrection() is kept.
+     */
+    private function withdrawCorrected(self $corrected): bool
+    {
+        $corrected->status = self::STATUS_WITHDRAWN;
+        $corrected->withdrawn_by = DefaultUserProvider::resolve()->getCurrentUserReference();
+        $corrected->withdrawn_at = date(self::DATETIME_FORMAT);
+
+        if (!$corrected->save(false)) {
+            $this->addError('status', Yii::t('knowledge-library', 'The corrected version could not be withdrawn.'));
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Extends the previous version to the end of this (withdrawn) version,
+     * see withdraw().
+     */
+    private function extendPrevious(self $previous): bool
+    {
+        $previous->valid_until = $this->valid_until;
+
+        if (!$previous->save(false)) {
+            $this->addError('status', Yii::t('knowledge-library', 'The previous version could not be extended.'));
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -1004,10 +1473,9 @@ class Version extends ActiveRecord
             return true;
         }
 
-        if (!empty($this->corrects_version_id)) {
-            // TODO: a correction replaces the corrected version instead of
-            // following it; handling the corrected version (e.g. withdrawing
-            // it) is part of the correction flow, which is not implemented yet.
+        if ($this->isCorrection()) {
+            // A correction replaces the corrected version instead of
+            // following it, see withdrawCorrected().
             return true;
         }
 

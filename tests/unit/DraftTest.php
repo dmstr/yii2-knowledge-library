@@ -66,6 +66,19 @@ class DraftTest extends TestCase
         $this->assertCount(2, Version::findOne($latest->id)->files);
     }
 
+    public function testCreateDraftContinuesACorrection(): void
+    {
+        $item = $this->createItem();
+        $published = $this->createPublishedVersion($item, ['valid_from' => '2026-01-01', 'content' => 'Faulty']);
+        $correction = Version::createCorrection($published);
+
+        $draft = Version::createDraft(Item::findOne($item->id), '2026-09-28');
+
+        $this->assertSame($correction->id, $draft->id);
+        $this->assertTrue($draft->isCorrection());
+        $this->assertSame('2026-01-01', $draft->valid_from);
+    }
+
     public function testSuggestedValidFromIsAtLeastToday(): void
     {
         $item = $this->createItem();

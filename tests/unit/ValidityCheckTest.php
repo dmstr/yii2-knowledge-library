@@ -331,6 +331,112 @@ class ValidityCheckTest extends TestCase
         $this->assertStringStartsWith('Version 2 is valid from', end($consequences));
     }
 
+    public function testCorrectionTakesOverThePeriodWithoutErrors(): void
+    {
+        $item = $this->createItem();
+        $this->createPublishedVersion($item, ['valid_from' => '2025-01-01']);
+        $faulty = $this->createPublishedVersion($item, ['valid_from' => '2026-01-01', 'valid_until' => '2026-12-31']);
+        $correction = Version::createCorrection($faulty);
+        // Entered dates are ignored, the correction keeps the period.
+        $correction->valid_from = 'invalid';
+        $correction->valid_until = '2020-01-01';
+
+        $check = new ValidityCheck($correction, self::TODAY);
+
+        $this->assertTrue($check->isValid());
+        $this->assertTrue($check->isCorrection());
+        $this->assertSame($faulty->id, $check->getCorrectedVersion()->id);
+        $this->assertSame('2026-01-01', $check->getValidFrom());
+        $this->assertSame('2026-12-31', $check->getValidUntil());
+        $this->assertSame([
+            'Version 2 is withdrawn.',
+            'Version 3 is valid from ' . $this->date('2026-01-01') . ' until ' . $this->date('2026-12-31') . '.',
+        ], $check->getConsequences());
+
+        $draft = $this->createVersion($this->createItem(), ['valid_from' => '2026-03-01']);
+        $this->assertFalse((new ValidityCheck($draft, self::TODAY))->isCorrection());
+        $this->assertNull((new ValidityCheck($draft, self::TODAY))->getCorrectedVersion());
+    }
+
+    public function testCorrectionPreviewShowsTheCorrectedVersionAsWithdrawn(): void
+    {
+        $item = $this->createItem();
+        $this->createPublishedVersion($item, ['valid_from' => '2025-01-01']);
+        $faulty = $this->createPublishedVersion($item, ['valid_from' => '2026-01-01']);
+        $this->createPublishedVersion($item, ['valid_from' => '2027-01-01']);
+        $correction = Version::createCorrection(Version::findOne($faulty->id));
+
+        $preview = (new ValidityCheck($correction, self::TODAY))->getPreview();
+
+        $this->assertSame([
+            ['n' => 1, 'a' => '2025-01-01', 'b' => '2025-12-31', 's' => 'hist', 'hl' => false, 'lane' => 0],
+            ['n' => 2, 'a' => '2026-01-01', 'b' => '2026-12-31', 's' => 'zur', 'hl' => false, 'lane' => 1],
+            ['n' => 3, 'a' => '2027-01-01', 'b' => null, 's' => 'bev', 'hl' => false, 'lane' => 0],
+            ['n' => 4, 'a' => '2026-01-01', 'b' => '2026-12-31', 's' => 'neu', 'hl' => false, 'lane' => 0],
+        ], $preview['v']);
+    }
+
+    public function testCorrectionOfTypeWithoutValidityPeriod(): void
+    {
+        $item = $this->createItem(['type_id' => $this->createType(['has_validity_period' => false])->id]);
+        $faulty = $this->createPublishedVersion($item);
+        $correction = Version::createCorrection($faulty);
+
+        $check = new ValidityCheck($correction, self::TODAY);
+
+        $this->assertTrue($check->isValid());
+        $this->assertSame([
+            'Version 1 is withdrawn.',
+            'Version 2 is valid from publication, open-ended.',
+        ], $check->getConsequences());
+        $this->assertNull($check->getPastYears());
+        $this->assertNull($check->getPastHint());
+        $bars = $check->getPreview()['v'];
+        $this->assertSame('zur', $bars[0]['s']);
+        $this->assertSame(1, $bars[0]['lane']);
+        $this->assertSame(['n' => 2, 'a' => self::TODAY, 'b' => null, 's' => 'neu', 'hl' => false, 'lane' => 0], $bars[1]);
+    }
+
+    public function testCorrectionPastHint(): void
+    {
+        $item = $this->createItem();
+        $old = $this->createPublishedVersion($item, ['valid_from' => '2024-03-01']);
+        $current = $this->createPublishedVersion($item, ['valid_from' => '2026-01-01', 'valid_until' => '2026-12-31']);
+        $open = $this->createPublishedVersion($item, ['valid_from' => '2027-01-01']);
+
+        $cases = [
+            // From 2024 until the end of 2025.
+            [$old, [2024, 2025], 'Changes the answers to questions about 2024 to 2025.'],
+            // Ends after today: until the current year.
+            [$current, [2026, 2026], 'Changes the answers to questions about 2026.'],
+            // Starts in the future: no hint.
+            [$open, null, null],
+        ];
+        foreach ($cases as [$version, $years, $hint]) {
+            $correction = Version::createCorrection(Version::findOne($version->id));
+            $check = new ValidityCheck($correction, self::TODAY);
+            $this->assertSame($years, $check->getPastYears(), (string)$version->number);
+            $this->assertSame($hint, $check->getPastHint(), (string)$version->number);
+            $correction->delete();
+        }
+
+        $draft = $this->createVersion($item, ['valid_from' => '2027-06-01']);
+        $this->assertNull((new ValidityCheck($draft, self::TODAY))->getPastHint());
+    }
+
+    public function testCorrectionTextsAreTranslated(): void
+    {
+        Yii::$app->language = 'de';
+        $item = $this->createItem();
+        $faulty = $this->createPublishedVersion($item, ['valid_from' => '2025-06-01']);
+        $correction = Version::createCorrection($faulty);
+
+        $check = new ValidityCheck($correction, self::TODAY);
+
+        $this->assertSame('Version 1 wird zurückgezogen.', $check->getConsequences()[0]);
+        $this->assertSame('Ändert die Antworten auf Fragen zu 2025 bis 2026.', $check->getPastHint());
+    }
+
     private function date(string $date): string
     {
         return Yii::$app->formatter->asDate($date);
