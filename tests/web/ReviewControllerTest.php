@@ -105,7 +105,7 @@ class ReviewControllerTest extends WebTestCase
         }
         $this->assertStringNotContainsString('value="' . $editor->uuid . '"', $html);
         $this->assertStringContainsString('name="message"', $html);
-        $this->assertMatchesRegularExpression('#<button type="submit" class="btn knowledge-library-wizard-submit" name="submit" value="1"[^>]*>Submit for approval</button>#', $html);
+        $this->assertMatchesRegularExpression('#<button type="submit" class="btn knowledge-library-wizard-submit" name="submit-for-review" value="1"[^>]*>Submit for approval</button>#', $html);
         $this->assertStringNotContainsString('knowledge-library-wizard-publish', $html);
     }
 
@@ -115,7 +115,7 @@ class ReviewControllerTest extends WebTestCase
         $draft = $this->readyDraft($item);
         $editor = $this->loginAs(Module::ROLE_EDITOR);
 
-        $this->post('version/update', ['submit' => 1, 'reviewer' => 'user-2', 'message' => ' Please check § 4. '], ['id' => $draft->id, 'step' => 4]);
+        $this->post('version/update', ['submit-for-review' => 1, 'reviewer' => 'user-2', 'message' => ' Please check § 4. '], ['id' => $draft->id, 'step' => 4]);
 
         $this->assertRedirectsTo(['item/view', 'id' => $item->id, 'tab' => 'versions']);
         $this->assertSame('Version 1 submitted for approval.', $this->getFlash('success'));
@@ -150,7 +150,7 @@ class ReviewControllerTest extends WebTestCase
         foreach ($cases as $reviewer => $message) {
             $html = $this->assertPage($this->post(
                 'version/update',
-                ['submit' => 1, 'reviewer' => (string)$reviewer, 'message' => 'Kept <text>'],
+                ['submit-for-review' => 1, 'reviewer' => (string)$reviewer, 'message' => 'Kept <text>'],
                 ['id' => $draft->id, 'step' => 4]
             ));
 
@@ -178,7 +178,7 @@ class ReviewControllerTest extends WebTestCase
         $this->assertStringNotContainsString('knowledge-library-wizard-submit', $html);
         $this->assertStringNotContainsString('name="reviewer"', $html);
 
-        $this->assertHttpException(ForbiddenHttpException::class, 'POST', 'version/update', ['id' => $draft->id, 'step' => 4], ['submit' => 1, 'reviewer' => 'user-2']);
+        $this->assertHttpException(ForbiddenHttpException::class, 'POST', 'version/update', ['id' => $draft->id, 'step' => 4], ['submit-for-review' => 1, 'reviewer' => 'user-2']);
         $this->assertSame(Version::STATUS_DRAFT, Version::findOne($draft->id)->status);
     }
 
@@ -189,7 +189,7 @@ class ReviewControllerTest extends WebTestCase
         $draft->updateAttributes(['content' => null]);
         $this->loginAs(Module::ROLE_EDITOR);
 
-        $this->post('version/update', ['submit' => 1, 'reviewer' => 'user-2'], ['id' => $draft->id, 'step' => 4]);
+        $this->post('version/update', ['submit-for-review' => 1, 'reviewer' => 'user-2'], ['id' => $draft->id, 'step' => 4]);
 
         $this->assertRedirectsTo(['version/update', 'id' => $draft->id, 'step' => 1]);
         $this->assertSame(Version::STATUS_DRAFT, Version::findOne($draft->id)->status);
@@ -204,7 +204,7 @@ class ReviewControllerTest extends WebTestCase
         foreach ([1, 2, 3] as $step) {
             $this->post('version/update', [
                 'save' => 1,
-                'submit' => 1,
+                'submit-for-review' => 1,
                 'reviewer' => 'user-2',
                 'Version' => ['content' => 'Text', 'reviewer_id' => 'user-2', 'status' => Version::STATUS_IN_REVIEW, 'review_message' => 'x'],
             ], ['id' => $draft->id, 'step' => $step]);
@@ -427,7 +427,7 @@ class ReviewControllerTest extends WebTestCase
         $this->assertStringContainsString('Please &lt;check&gt;</textarea>', $html);
 
         // Submitting again clears the return.
-        $this->post('version/update', ['submit' => 1, 'reviewer' => $reviewer->uuid, 'message' => 'Fixed.'], ['id' => $version->id, 'step' => 4]);
+        $this->post('version/update', ['submit-for-review' => 1, 'reviewer' => $reviewer->uuid, 'message' => 'Fixed.'], ['id' => $version->id, 'step' => 4]);
         $this->assertSame('Version 1 submitted for approval.', $this->getFlash('success'));
         $resubmitted = Version::findOne($version->id);
         $this->assertSame(Version::STATUS_IN_REVIEW, $resubmitted->status);

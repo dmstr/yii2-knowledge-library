@@ -44,7 +44,11 @@ class VersionController extends BaseController
     public const BUTTON_NEXT = 'next';
     public const BUTTON_BACK = 'back';
     public const BUTTON_PUBLISH = 'publish';
-    public const BUTTON_SUBMIT = 'submit';
+    /**
+     * Not `submit`: a form control of that name shadows `form.submit()`, so the
+     * `$form.submit()` of yii.activeForm.js does nothing and the click is swallowed.
+     */
+    public const BUTTON_SUBMIT = 'submit-for-review';
 
     /**
      * Fields of the review step for submitting a draft for approval.

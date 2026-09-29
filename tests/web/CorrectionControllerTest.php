@@ -193,7 +193,7 @@ class CorrectionControllerTest extends WebTestCase
         $this->loginAs(Module::ROLE_EDITOR);
         $correction = $this->correct($faulty);
 
-        $this->post('version/update', ['submit' => 1, 'reviewer' => 'user-2'], ['id' => $correction->id, 'step' => 4]);
+        $this->post('version/update', ['submit-for-review' => 1, 'reviewer' => 'user-2'], ['id' => $correction->id, 'step' => 4]);
         $this->assertRedirectsTo(['item/view', 'id' => $item->id, 'tab' => 'versions']);
         $this->assertSame(Version::STATUS_IN_REVIEW, Version::findOne($correction->id)->status);
         $this->assertSame(Version::STATUS_PUBLISHED, Version::findOne($faulty->id)->status);
