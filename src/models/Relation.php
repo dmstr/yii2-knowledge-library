@@ -106,6 +106,15 @@ class Relation extends ActiveRecord
     }
 
     /**
+     * The label with an upper case first letter; the labels are lower case
+     * for use within a sentence.
+     */
+    public static function capitalize(string $label): string
+    {
+        return mb_strtoupper(mb_substr($label, 0, 1)) . mb_substr($label, 1);
+    }
+
+    /**
      * Label of the relation seen from the given item.
      *
      * @throws InvalidArgumentException if the item is not part of the relation

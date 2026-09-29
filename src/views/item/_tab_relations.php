@@ -15,12 +15,9 @@
 use dmstr\knowledgeLibrary\models\Relation;
 use yii\helpers\Html;
 
-// The labels are lower case for use within a sentence.
-$capitalize = static fn (string $label) => mb_strtoupper(mb_substr($label, 0, 1)) . mb_substr($label, 1);
-
 $typeOptions = [];
 foreach (Relation::labels() as $type => $labels) {
-    $typeOptions[$type] = $capitalize($labels['forward']);
+    $typeOptions[$type] = Relation::capitalize($labels['forward']);
 }
 
 $boxStyle = 'border: 1px solid #d2d6de; border-radius: 3px; margin-bottom: 15px';
@@ -34,7 +31,7 @@ $labelStyle = 'width: 150px; color: #777';
             <div style="<?= $headStyle ?>"><?= Html::encode(Yii::t('knowledge-library', 'Outgoing')) ?></div>
             <?php foreach ($outgoing as $relation): ?>
                 <div class="knowledge-library-relation" style="<?= $rowStyle ?>">
-                    <span style="<?= $labelStyle ?>"><?= Html::encode($capitalize($relation->getLabelFor($model->id))) ?></span>
+                    <span style="<?= $labelStyle ?>"><?= Html::encode(Relation::capitalize($relation->getLabelFor($model->id))) ?></span>
                     <span style="flex: 1">
                         <?php if ($relation->targetItem !== null): ?>
                             <?= Html::a(Html::encode($relation->targetItem->title), ['view', 'id' => $relation->target_item_id]) ?>
@@ -77,7 +74,7 @@ $labelStyle = 'width: 150px; color: #777';
             <div style="<?= $headStyle ?>"><?= Html::encode(Yii::t('knowledge-library', 'Incoming')) ?></div>
             <?php foreach ($incoming as $relation): ?>
                 <div class="knowledge-library-relation" style="<?= $rowStyle ?>">
-                    <span style="<?= $labelStyle ?>"><?= Html::encode($capitalize($relation->getLabelFor($model->id))) ?></span>
+                    <span style="<?= $labelStyle ?>"><?= Html::encode(Relation::capitalize($relation->getLabelFor($model->id))) ?></span>
                     <span style="flex: 1">
                         <?php if ($relation->sourceItem !== null): ?>
                             <?= Html::a(Html::encode($relation->sourceItem->title), ['view', 'id' => $relation->source_item_id]) ?>

@@ -3,6 +3,8 @@
 namespace dmstr\knowledgeLibrary\tests\web\frontend;
 
 use dmstr\knowledgeLibrary\models\File;
+use dmstr\knowledgeLibrary\models\Item;
+use dmstr\knowledgeLibrary\models\Relation;
 use dmstr\knowledgeLibrary\tests\FrontendWebTestCase;
 use dmstr\knowledgeLibrary\tests\support\FrontendFixtures;
 use Yii;
@@ -293,6 +295,84 @@ class ItemControllerTest extends FrontendWebTestCase
         }
     }
 
+    public function testViewShowsRelationsGroupedByLabel(): void
+    {
+        [$item] = $this->createValidItem(['title' => 'Forest law']);
+        [$bravo] = $this->createValidItem(['title' => 'Bravo']);
+        [$alpha] = $this->createValidItem(['title' => 'Alpha']);
+        [$basis] = $this->createValidItem(['title' => 'Basis']);
+        [$successor] = $this->createValidItem(['title' => 'Successor']);
+        $this->createRelation($item, $bravo, Relation::TYPE_SUPPLEMENTS);
+        $this->createRelation($item, $alpha, Relation::TYPE_SUPPLEMENTS);
+        $this->createRelation($item, $basis, Relation::TYPE_BASED_ON);
+        $this->createRelation($successor, $item, Relation::TYPE_REPLACES);
+        $this->loginAs('knowledge');
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertStringContainsString('<section class="knowledge-relations">', $html);
+        $this->assertStringContainsString('<h2>Relations</h2>', $html);
+        $this->assertSame([
+            'Is based on' => ['Basis'],
+            'Supplements' => ['Alpha', 'Bravo'],
+            'Is replaced by' => ['Successor'],
+        ], $this->listedRelations($html));
+        $url = Html::encode(Url::to(['/knowledge/item/view', 'id' => $alpha->id]));
+        $this->assertStringContainsString('<a class="knowledge-relation-link" href="' . $url . '">Alpha</a>', $html);
+
+        // Seen from the other side the inverse label applies.
+        $html = $this->assertPage($this->get('item/view', ['id' => $basis->id]));
+        $this->assertSame(['Is the basis for' => ['Forest law']], $this->listedRelations($html));
+    }
+
+    public function testViewLeavesOutRelationsToItemsNotValidToday(): void
+    {
+        [$item] = $this->createValidItem(['title' => 'Forest law']);
+        foreach ($this->createInvalidItems() as [$other]) {
+            $this->createRelation($item, $other, Relation::TYPE_SUPPLEMENTS);
+            $this->createRelation($other, $item, Relation::TYPE_BASED_ON);
+        }
+        [$valid] = $this->createValidItem(['title' => 'Valid']);
+        $this->createRelation($item, $valid, Relation::TYPE_REPLACES);
+        $this->loginAs('knowledge');
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertSame(['Replaces' => ['Valid']], $this->listedRelations($html));
+        foreach (['Only draft', 'Only in review', 'Only historical', 'Only upcoming', 'Withdrawn', 'Archived'] as $title) {
+            $this->assertStringNotContainsString($title, $html);
+        }
+    }
+
+    public function testViewWithoutVisibleRelationsOmitsTheSection(): void
+    {
+        [$item] = $this->createValidItem();
+        [$archived] = $this->createValidItem(['title' => 'Archived']);
+        $this->createRelation($item, $archived, Relation::TYPE_SUPPLEMENTS);
+        $this->assertTrue($archived->archive());
+        [$lonely] = $this->createValidItem();
+        $this->loginAs('knowledge');
+
+        foreach ([$item, $lonely] as $viewed) {
+            $html = $this->assertPage($this->get('item/view', ['id' => $viewed->id]));
+            $this->assertStringNotContainsString('knowledge-relations', $html);
+        }
+    }
+
+    public function testViewRelationsAreGerman(): void
+    {
+        [$item] = $this->createValidItem();
+        [$other] = $this->createValidItem(['title' => 'Other']);
+        $this->createRelation($other, $item, Relation::TYPE_SUPPLEMENTS);
+        $this->loginAs('knowledge');
+        Yii::$app->language = 'de';
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertStringContainsString('<h2>Beziehungen</h2>', $html);
+        $this->assertSame(['Wird ergänzt durch' => ['Other']], $this->listedRelations($html));
+    }
+
     public function testListAndViewEncodeAllOutput(): void
     {
         $type = $this->createType(['name' => 'Type ' . self::XSS]);
@@ -309,6 +389,8 @@ class ItemControllerTest extends FrontendWebTestCase
         ]);
         $this->createStoredFile($version, 'main ' . self::XSS . '.pdf');
         $this->createStoredFile($version, 'annex.pdf', ['kind' => File::KIND_ATTACHMENT, 'title' => 'Annex ' . self::XSS]);
+        [$related] = $this->createValidItem(['title' => 'Related ' . self::XSS]);
+        $this->createRelation($item, $related, Relation::TYPE_SUPPLEMENTS);
         $this->loginAs('knowledge');
 
         $list = $this->assertPage($this->get('item/index'));
@@ -324,7 +406,7 @@ class ItemControllerTest extends FrontendWebTestCase
         $this->assertStringContainsString('<strong>bold</strong>', $detail);
         $this->assertStringContainsString('&lt;script&gt;alert(1)&lt;/script&gt;', $detail);
         $this->assertStringContainsString('&lt;img src=x onerror=alert(2)&gt;', $detail);
-        foreach (['Summary', 'Source', 'Reference', 'Annex', 'main'] as $prefix) {
+        foreach (['Summary', 'Source', 'Reference', 'Annex', 'main', 'Related'] as $prefix) {
             $this->assertStringContainsString($prefix . ' &lt;img src=x onerror=alert(2)&gt;', $detail, $prefix);
         }
         $this->assertStringContainsString('href="https://example.org/?q=&quot;&gt;&lt;script&gt;', $detail);
@@ -340,5 +422,42 @@ class ItemControllerTest extends FrontendWebTestCase
         preg_match_all('/<a class="knowledge-item-link" href="[^"]*">([^<]*)<\/a>/', $html, $matches);
 
         return array_map('html_entity_decode', $matches[1]);
+    }
+
+    /**
+     * Related item titles of the detail page by label, in the order of the
+     * page.
+     *
+     * @return array<string, string[]>
+     */
+    private function listedRelations(string $html): array
+    {
+        $this->assertSame(1, preg_match('#<dl class="knowledge-relations-list">(.*?)</dl>#s', $html, $list));
+        preg_match_all('#<dt>([^<]*)</dt>|<dd><a class="knowledge-relation-link" href="[^"]*">([^<]*)</a></dd>#', $list[1], $matches, PREG_SET_ORDER);
+
+        $groups = [];
+        $label = null;
+        foreach ($matches as $match) {
+            if ($match[1] !== '') {
+                $label = html_entity_decode($match[1]);
+                $groups[$label] = [];
+            } else {
+                $groups[$label][] = html_entity_decode($match[2]);
+            }
+        }
+
+        return $groups;
+    }
+
+    private function createRelation(Item $source, Item $target, string $type): Relation
+    {
+        $relation = new Relation([
+            'source_item_id' => $source->id,
+            'target_item_id' => $target->id,
+            'type' => $type,
+        ]);
+        $this->assertTrue($relation->save(), json_encode($relation->getErrors()));
+
+        return $relation;
     }
 }

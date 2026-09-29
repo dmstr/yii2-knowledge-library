@@ -2,15 +2,17 @@
 
 /**
  * Detail page of an item valid today: master data, validity and source, the
- * summary, the text and the files of the valid version. Empty fields are
- * left out.
+ * summary, the text and the files of the valid version and the related
+ * items. Empty fields are left out.
  *
  * @var yii\web\View $this
  * @var dmstr\knowledgeLibrary\models\Item $item
  * @var dmstr\knowledgeLibrary\models\Version $version the version valid today
+ * @var array<string, dmstr\knowledgeLibrary\models\Item[]> $relations related items shown in the frontend, by label
  */
 
 use dmstr\knowledgeLibrary\helpers\MarkdownHelper;
+use dmstr\knowledgeLibrary\models\Relation;
 use yii\helpers\Html;
 
 $this->title = $item->title;
@@ -117,6 +119,20 @@ $attachments = $version->attachments;
                     <?php endforeach ?>
                 </ul>
             <?php endif ?>
+        </section>
+    <?php endif ?>
+
+    <?php if ($relations !== []): ?>
+        <section class="knowledge-relations">
+            <h2><?= Html::encode(Yii::t('knowledge-library', 'Relations')) ?></h2>
+            <dl class="knowledge-relations-list">
+                <?php foreach ($relations as $label => $relatedItems): ?>
+                    <dt><?= Html::encode(Relation::capitalize($label)) ?></dt>
+                    <?php foreach ($relatedItems as $related): ?>
+                        <dd><?= Html::a(Html::encode($related->title), ['item/view', 'id' => $related->id], ['class' => 'knowledge-relation-link']) ?></dd>
+                    <?php endforeach ?>
+                <?php endforeach ?>
+            </dl>
         </section>
     <?php endif ?>
 </article>
