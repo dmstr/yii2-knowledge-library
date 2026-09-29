@@ -218,9 +218,9 @@ class ItemControllerTest extends FrontendWebTestCase
             . ' until open-ended</dd>',
             $html
         );
-        $this->assertStringContainsString('No text available.', $html);
-        $this->assertStringContainsString('No main documents.', $html);
-        $this->assertStringContainsString('No attachments.', $html);
+        foreach (['knowledge-content', 'knowledge-files', 'No text available.', 'No main documents.', 'No attachments.'] as $absent) {
+            $this->assertStringNotContainsString($absent, $html);
+        }
     }
 
     public function testViewOfTypeWithoutValidityPeriodShowsPublicationDate(): void

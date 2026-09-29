@@ -76,51 +76,47 @@ $attachments = $version->attachments;
         </section>
     <?php endif ?>
 
-    <section class="knowledge-content">
-        <h2><?= Html::encode(Yii::t('knowledge-library', 'Content')) ?></h2>
-        <?php if (!$filled($version->content)): ?>
-            <p class="text-muted knowledge-content-empty"><?= Html::encode(Yii::t('knowledge-library', 'No text available.')) ?></p>
-        <?php else: ?>
+    <?php if ($filled($version->content)): ?>
+        <section class="knowledge-content">
+            <h2><?= Html::encode(Yii::t('knowledge-library', 'Content')) ?></h2>
             <?= MarkdownHelper::render($version->content) ?>
-        <?php endif ?>
-    </section>
+        </section>
+    <?php endif ?>
 
-    <section class="knowledge-files">
-        <h2><?= Html::encode(Yii::t('knowledge-library', 'Files')) ?></h2>
+    <?php if ($mainFiles !== [] || $attachments !== []): ?>
+        <section class="knowledge-files">
+            <h2><?= Html::encode(Yii::t('knowledge-library', 'Files')) ?></h2>
 
-        <h3><?= Html::encode(Yii::t('knowledge-library', 'Main Files')) ?></h3>
-        <?php if ($mainFiles === []): ?>
-            <p class="text-muted knowledge-files-no-main-files"><?= Html::encode(Yii::t('knowledge-library', 'No main documents.')) ?></p>
-        <?php else: ?>
-            <ul class="knowledge-main-files">
-                <?php foreach ($mainFiles as $file): ?>
-                    <li>
-                        <?= Html::a(Html::encode($file->name), ['file/download', 'id' => $file->id]) ?>
-                        <?php if ($file->size !== null): ?>
-                            <span class="knowledge-file-size">(<?= Html::encode($formatSize($file->size)) ?>)</span>
-                        <?php endif ?>
-                    </li>
-                <?php endforeach ?>
-            </ul>
-        <?php endif ?>
+            <?php if ($mainFiles !== []): ?>
+                <h3><?= Html::encode(Yii::t('knowledge-library', 'Main Files')) ?></h3>
+                <ul class="knowledge-main-files">
+                    <?php foreach ($mainFiles as $file): ?>
+                        <li>
+                            <?= Html::a(Html::encode($file->name), ['file/download', 'id' => $file->id]) ?>
+                            <?php if ($file->size !== null): ?>
+                                <span class="knowledge-file-size">(<?= Html::encode($formatSize($file->size)) ?>)</span>
+                            <?php endif ?>
+                        </li>
+                    <?php endforeach ?>
+                </ul>
+            <?php endif ?>
 
-        <h3><?= Html::encode(Yii::t('knowledge-library', 'Attachments')) ?></h3>
-        <?php if ($attachments === []): ?>
-            <p class="text-muted knowledge-files-no-attachments"><?= Html::encode(Yii::t('knowledge-library', 'No attachments.')) ?></p>
-        <?php else: ?>
-            <ul class="knowledge-attachments">
-                <?php foreach ($attachments as $file): ?>
-                    <li>
-                        <?= Html::a(Html::encode($filled($file->title) ? $file->title : $file->name), ['file/download', 'id' => $file->id]) ?>
-                        <?php if ($filled($file->title)): ?>
-                            <span class="knowledge-file-name"><?= Html::encode($file->name) ?></span>
-                        <?php endif ?>
-                        <?php if ($file->size !== null): ?>
-                            <span class="knowledge-file-size">(<?= Html::encode($formatSize($file->size)) ?>)</span>
-                        <?php endif ?>
-                    </li>
-                <?php endforeach ?>
-            </ul>
-        <?php endif ?>
-    </section>
+            <?php if ($attachments !== []): ?>
+                <h3><?= Html::encode(Yii::t('knowledge-library', 'Attachments')) ?></h3>
+                <ul class="knowledge-attachments">
+                    <?php foreach ($attachments as $file): ?>
+                        <li>
+                            <?= Html::a(Html::encode($filled($file->title) ? $file->title : $file->name), ['file/download', 'id' => $file->id]) ?>
+                            <?php if ($filled($file->title)): ?>
+                                <span class="knowledge-file-name"><?= Html::encode($file->name) ?></span>
+                            <?php endif ?>
+                            <?php if ($file->size !== null): ?>
+                                <span class="knowledge-file-size">(<?= Html::encode($formatSize($file->size)) ?>)</span>
+                            <?php endif ?>
+                        </li>
+                    <?php endforeach ?>
+                </ul>
+            <?php endif ?>
+        </section>
+    <?php endif ?>
 </article>
