@@ -9,7 +9,8 @@ use yii\db\ActiveQuery;
  * File of a version, stored in the configured file storage.
  *
  * A main file carries the content of the version (e.g. a PDF), attachments
- * are supplementary material.
+ * are supplementary material. Both may have a title, shown instead of the
+ * file name.
  *
  * @property string $id
  * @property string $version_id
@@ -92,6 +93,14 @@ class File extends ActiveRecord
             'created_by' => Yii::t('knowledge-library', 'Created By'),
             'updated_by' => Yii::t('knowledge-library', 'Updated By'),
         ];
+    }
+
+    /**
+     * Title of the file, the file name if it has none.
+     */
+    public function getDisplayName(): string
+    {
+        return trim((string)$this->title) !== '' ? (string)$this->title : (string)$this->name;
     }
 
     /**

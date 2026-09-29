@@ -667,12 +667,14 @@ class VersionController extends BaseController
      * files of the draft.
      *
      * Files: `remove[<file-id>] = 1` removes a file of the draft (the stored
-     * file only if no other version refers to it), `mainFiles[]` are new
-     * main files, `attachments[<i>]` new attachments with the title
-     * `attachmentTitles[<i>]` of the same index.
+     * file only if no other version refers to it), `titles[<file-id>]` sets
+     * the title of a file of the draft (empty removes it), `mainFiles[<i>]`
+     * are new main files with the title `mainFileTitles[<i>]` of the same
+     * index, `attachments[<i>]` new attachments with the title
+     * `attachmentTitles[<i>]`.
      *
-     * Invalid text is not saved; the model keeps the errors. Rejected uploads
-     * are neither stored nor saved, their messages are added as errors of
+     * Invalid text is not saved; the model keeps the errors. Invalid titles
+     * and rejected uploads are not saved, their messages are added as errors of
      * `files` (see FILES_ERROR_ATTRIBUTE) and the step counts as not saved,
      * so "Next" stays on the step; for "Back" they are shown as flash
      * message.
@@ -695,10 +697,10 @@ class VersionController extends BaseController
     }
 
     /**
-     * Removes the files marked in `remove` and stores the uploads of the
-     * step content.
+     * Removes the files marked in `remove`, saves the titles of the kept
+     * files and stores the uploads of the step content.
      *
-     * @return string[] messages of rejected uploads
+     * @return string[] messages of invalid titles and rejected uploads
      */
     private function saveContentFiles(Version $model, array $post): array
     {
@@ -718,17 +720,37 @@ class VersionController extends BaseController
             }
         }
 
-        $uploads = [];
-        foreach (UploadedFile::getInstancesByName('mainFiles') as $upload) {
-            $uploads[] = [$upload, File::KIND_MAIN, null];
-        }
-        $titles = isset($post['attachmentTitles']) && is_array($post['attachmentTitles']) ? $post['attachmentTitles'] : [];
-        foreach (static::uploadsByIndex('attachments') as $index => $upload) {
-            $title = $titles[$index] ?? null;
-            $uploads[] = [$upload, File::KIND_ATTACHMENT, is_string($title) ? $title : null];
+        $rejected = [];
+        $titles = isset($post['titles']) && is_array($post['titles']) ? $post['titles'] : [];
+        $titledIds = array_diff(array_map('strval', array_keys($titles)), $removeIds);
+        $retitled = false;
+        if ($titledIds !== []) {
+            // Only files of this draft can be retitled.
+            foreach (File::find()->where(['version_id' => $model->id, 'id' => $titledIds])->all() as $file) {
+                $title = $titles[$file->id];
+                $file->title = is_string($title) ? $title : null;
+                if (!$file->validate(['title'])) {
+                    $rejected[] = $file->getFirstError('title');
+                } elseif ($file->getDirtyAttributes(['title']) !== []) {
+                    $file->save(false, ['title']);
+                    $retitled = true;
+                }
+            }
         }
 
-        $rejected = [];
+        $uploads = [];
+        $fields = [
+            File::KIND_MAIN => ['mainFiles', 'mainFileTitles'],
+            File::KIND_ATTACHMENT => ['attachments', 'attachmentTitles'],
+        ];
+        foreach ($fields as $kind => [$fileField, $titleField]) {
+            $uploadTitles = isset($post[$titleField]) && is_array($post[$titleField]) ? $post[$titleField] : [];
+            foreach (static::uploadsByIndex($fileField) as $index => $upload) {
+                $title = $uploadTitles[$index] ?? null;
+                $uploads[] = [$upload, $kind, is_string($title) ? $title : null];
+            }
+        }
+
         foreach ($uploads as [$upload, $kind, $title]) {
             $file = $service->store($model, $upload, $kind, $title);
             if ($file->getIsNewRecord()) {
@@ -737,7 +759,7 @@ class VersionController extends BaseController
             }
         }
 
-        if ($removeIds !== [] || $uploads !== []) {
+        if ($removeIds !== [] || $retitled || $uploads !== []) {
             unset($model->files, $model->mainFiles, $model->attachments);
         }
 

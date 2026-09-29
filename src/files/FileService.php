@@ -50,7 +50,7 @@ class FileService
      * (`source_uploaded_at`, `source_uploaded_by`; the latest upload wins).
      *
      * @param string $kind File::KIND_MAIN or File::KIND_ATTACHMENT
-     * @param string|null $title title of an attachment
+     * @param string|null $title title of the file
      *
      * @return File the saved file row; if the upload was rejected or could
      * not be stored, an unsaved file (`getIsNewRecord()` is true) with the

@@ -796,11 +796,13 @@ class VersionControllerTest extends WebTestCase
 
         $accept = '.pdf,.docx,.xlsx,.pptx,.odt,.ods,.txt,.jpg,.jpeg,.png,.gif,.webp';
         // Native inputs, usable without JavaScript.
-        $this->assertMatchesRegularExpression('#<input type="file" id="knowledge-library-wizard-main-upload"[^>]* name="mainFiles\[\]" multiple accept="' . preg_quote($accept, '#') . '">#', $html);
-        $this->assertStringContainsString('<label style="display: block; font-weight: 400; margin-bottom: 4px" for="knowledge-library-wizard-main-upload">Add main documents</label>', $html);
-        $this->assertMatchesRegularExpression('#<input type="file"[^>]* name="attachments\[0\]"#', $html);
-        $this->assertMatchesRegularExpression('#<input type="text"[^>]* name="attachmentTitles\[0\]"#', $html);
-        $this->assertStringContainsString('<button type="button" class="knowledge-library-wizard-add-attachment"', $html);
+        foreach (['mainFiles' => 'Add main document', 'attachments' => 'Add attachment'] as $field => $label) {
+            $this->assertMatchesRegularExpression('#<input type="file"[^>]* name="' . $field . '\[0\]" accept="' . preg_quote($accept, '#') . '" aria-label="' . $label . '"#', $html);
+        }
+        $this->assertMatchesRegularExpression('#<input type="text"[^>]* name="mainFileTitles\[0\]" maxlength="255" placeholder="Title of the main document"#', $html);
+        $this->assertMatchesRegularExpression('#<input type="text"[^>]* name="attachmentTitles\[0\]" maxlength="255" placeholder="Title of the attachment"#', $html);
+        $this->assertStringContainsString('<button type="button" class="knowledge-library-wizard-add-upload knowledge-library-wizard-add-main-file"', $html);
+        $this->assertStringContainsString('<button type="button" class="knowledge-library-wizard-add-upload knowledge-library-wizard-add-attachment"', $html);
         $this->assertStringContainsString('Allowed types: ' . self::ALLOWED . '. At most 20 MB per file.', $html);
         $this->assertStringNotContainsString('knowledge-library-wizard-file-error', $html);
     }
@@ -935,7 +937,7 @@ class VersionControllerTest extends WebTestCase
         $this->assertSame(['a.txt', 'b.txt'], array_map(static fn (File $file) => $file->name, $attachments));
         $this->assertSame([], Version::findOne($draft->id)->mainFiles);
         $this->assertNull(Item::findOne($item->id)->source_uploaded_at);
-        $this->assertStringContainsString('> Form A <span', preg_replace('/\s+/', ' ', $html));
+        $this->assertStringContainsString('name="titles[' . $attachments[0]->id . ']" value="Form A"', $html);
     }
 
     public function testAttachmentTitlesFollowTheIndexOfTheUpload(): void
@@ -958,6 +960,113 @@ class VersionControllerTest extends WebTestCase
         $attachments = Version::findOne($draft->id)->attachments;
         $this->assertSame(['Second', null], array_map(static fn (File $file) => $file->title, $attachments));
         $this->assertSame(['b.txt', 'c.txt'], array_map(static fn (File $file) => $file->name, $attachments));
+    }
+
+    public function testMainFileTitlesFollowTheIndexOfTheUpload(): void
+    {
+        $item = $this->createPeriodItem();
+        $draft = Version::createDraft($item);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->postFiles(
+            'version/update',
+            ['save' => 1, 'Version' => ['content' => ''], 'mainFileTitles' => ['', 'Forest law', ' ']],
+            [
+                'mainFiles[1]' => $this->sourceFile('law.pdf', self::PDF),
+                'mainFiles[2]' => $this->sourceFile('annex.txt', 'Annex text'),
+            ],
+            ['id' => $draft->id, 'step' => 1]
+        );
+
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+        $mainFiles = Version::findOne($draft->id)->mainFiles;
+        $this->assertSame(['Forest law', null], array_map(static fn (File $file) => $file->title, $mainFiles));
+        $this->assertSame(['law.pdf', 'annex.txt'], array_map(static fn (File $file) => $file->name, $mainFiles));
+        $this->assertSame(['Forest law', 'annex.txt'], array_map(static fn (File $file) => $file->getDisplayName(), $mainFiles));
+        $this->assertNotNull(Item::findOne($item->id)->source_uploaded_at);
+
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertStringContainsString('name="titles[' . $mainFiles[0]->id . ']" value="Forest law" maxlength="255" placeholder="Title of the main document"', $html);
+        $this->assertStringContainsString('name="titles[' . $mainFiles[1]->id . ']" maxlength="255" placeholder="Title of the main document"', $html);
+        $this->assertSame(2, substr_count($html, 'data-kl-main-file="1"'));
+    }
+
+    public function testTitlesOfTheDraftFilesCanBeChanged(): void
+    {
+        $item = $this->createPeriodItem();
+        $published = $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
+        $publishedMain = $this->createFile($published, ['kind' => File::KIND_MAIN, 'name' => 'law.pdf', 'title' => 'Law']);
+        $this->createFile($published, ['kind' => File::KIND_ATTACHMENT, 'name' => 'form.pdf', 'title' => 'Form', 'position' => 1]);
+        $this->createFile($published, ['kind' => File::KIND_ATTACHMENT, 'name' => 'map.pdf', 'position' => 2]);
+        $draft = Version::createDraft($item);
+        [$main, $form, $map] = File::find()->where(['version_id' => $draft->id])->orderBy(['position' => SORT_ASC])->all();
+        $other = $this->createFile($this->createPublishedVersion($this->createPeriodItem(), ['valid_from' => '2020-01-01']), [
+            'name' => 'other.pdf',
+            'title' => 'Other',
+        ]);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('version/update', [
+            'save' => 1,
+            'Version' => ['content' => 'Text'],
+            'titles' => [
+                $main->id => '  Forest law  ',
+                $form->id => '',
+                $map->id => 'Map',
+                // Files of other versions are not changed.
+                $other->id => 'Changed',
+            ],
+        ], ['id' => $draft->id, 'step' => 1]);
+
+        $this->assertRedirectsTo(['item/view', 'id' => $item->id]);
+        $this->assertSame('Forest law', File::findOne($main->id)->title);
+        $this->assertNull(File::findOne($form->id)->title);
+        $this->assertSame('Map', File::findOne($map->id)->title);
+        $this->assertSame('Other', File::findOne($other->id)->title);
+        // The rows of the published version keep their titles.
+        $this->assertSame('Law', File::findOne($publishedMain->id)->title);
+
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 1]));
+        $this->assertStringContainsString('name="titles[' . $main->id . ']" value="Forest law"', $html);
+        $this->assertStringContainsString('name="titles[' . $form->id . ']" maxlength="255" placeholder="Title of the attachment"', $html);
+        $this->assertStringContainsString('>law.pdf</span>', $html);
+
+        $html = $this->assertPage($this->get('version/update', ['id' => $draft->id, 'step' => 4]));
+        $this->assertStringContainsString('Forest law (law.pdf)', $html);
+        $this->assertStringContainsString('form.pdf, Map (map.pdf)', $html);
+    }
+
+    public function testTitleOfARemovedFileIsIgnored(): void
+    {
+        $draft = $this->readyDraft($this->createPeriodItem());
+        $file = $this->createFile($draft, ['kind' => File::KIND_ATTACHMENT, 'name' => 'form.pdf']);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $this->post('version/update', [
+            'save' => 1,
+            'Version' => ['content' => 'Text'],
+            'remove' => [$file->id => '1'],
+            'titles' => [$file->id => 'Form'],
+        ], ['id' => $draft->id, 'step' => 1]);
+
+        $this->assertRedirectsTo(['item/view', 'id' => $draft->item_id]);
+        $this->assertNull(File::findOne($file->id));
+    }
+
+    public function testTooLongTitleIsRejected(): void
+    {
+        $draft = $this->readyDraft($this->createPeriodItem());
+        $file = $this->createFile($draft, ['kind' => File::KIND_MAIN, 'name' => 'law.pdf', 'title' => 'Law']);
+        $this->loginAs(Module::ROLE_EDITOR);
+
+        $html = $this->assertPage($this->post('version/update', [
+            'next' => 1,
+            'Version' => ['content' => 'Text'],
+            'titles' => [$file->id => str_repeat('x', 256)],
+        ], ['id' => $draft->id, 'step' => 1]));
+
+        $this->assertMatchesRegularExpression('#<div class="knowledge-library-wizard-file-error"[^>]*>\s*<i class="fa fa-times-circle"></i> Title should contain at most 255 characters\.\s*</div>#', $html);
+        $this->assertSame('Law', File::findOne($file->id)->title);
     }
 
     public function testSecondVersionTakesOverFilesAndRemovalKeepsSharedStorage(): void
@@ -1097,7 +1206,8 @@ class VersionControllerTest extends WebTestCase
         foreach ([
             'Entfernen',
             'data-kl-label-keep="Behalten"',
-            'Hauptdokumente hinzufügen',
+            'Hauptdokument hinzufügen',
+            'Titel des Hauptdokuments',
             'Anhang hinzufügen',
             'Titel des Anhangs',
             'Erlaubte Typen: ' . self::ALLOWED . '. Höchstens 20 MB je Datei.',

@@ -68,6 +68,14 @@ class FileHistoryTest extends TestCase
         $this->assertSame($version->id, File::findOne($file->id)->version->id);
     }
 
+    public function testDisplayNameIsTheTitleOrTheFileName(): void
+    {
+        $this->assertSame('Forest law', (new File(['title' => 'Forest law', 'name' => 'law.pdf']))->getDisplayName());
+        foreach ([null, '', '  '] as $title) {
+            $this->assertSame('law.pdf', (new File(['title' => $title, 'name' => 'law.pdf']))->getDisplayName());
+        }
+    }
+
     public function testMainFilesAndAttachmentsAreOrderedByPosition(): void
     {
         $version = $this->createVersion($this->createItem());

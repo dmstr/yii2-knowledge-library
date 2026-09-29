@@ -22,7 +22,12 @@ $formatter = Yii::$app->formatter;
 $none = Yii::t('knowledge-library', 'none');
 $names = static fn (array $files) => $files === []
     ? $none
-    : implode(', ', array_map(static fn ($file) => $file->name, $files));
+    : implode(', ', array_map(
+        static fn ($file) => $file->getDisplayName() === $file->name
+            ? $file->name
+            : $file->getDisplayName() . ' (' . $file->name . ')',
+        $files
+    ));
 
 $textStates = [
     Version::CONTENT_CHANGED => Yii::t('knowledge-library', 'changed'),

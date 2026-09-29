@@ -201,6 +201,23 @@ class ItemControllerTest extends FrontendWebTestCase
         ], $view->params['breadcrumbs']);
     }
 
+    public function testViewShowsTheTitlesOfMainFiles(): void
+    {
+        [$item, $version] = $this->createValidItem();
+        $titled = $this->createStoredFile($version, 'law.pdf', ['title' => 'Forest law']);
+        $untitled = $this->createStoredFile($version, 'annex.pdf', ['position' => 1]);
+        $this->loginAs('knowledge');
+
+        $html = $this->assertPage($this->get('item/view', ['id' => $item->id]));
+
+        $this->assertSame(1, preg_match('#<ul class="knowledge-main-files">(.*?)</ul>#s', $html, $list));
+        $titledUrl = Html::encode(Url::to(['/knowledge/file/download', 'id' => $titled->id]));
+        $untitledUrl = Html::encode(Url::to(['/knowledge/file/download', 'id' => $untitled->id]));
+        $this->assertMatchesRegularExpression('#<a href="' . preg_quote($titledUrl, '#') . '">Forest law</a>\s*<span class="knowledge-file-name">law\.pdf</span>#', $list[1]);
+        $this->assertMatchesRegularExpression('#<a href="' . preg_quote($untitledUrl, '#') . '">annex\.pdf</a>\s*<span class="knowledge-file-size">#', $list[1]);
+        $this->assertSame(1, substr_count($list[1], 'knowledge-file-name'));
+    }
+
     public function testViewOmitsEmptyFieldsAndShowsEmptyHints(): void
     {
         [$item] = $this->createValidItem(['title' => 'Bare'], ['valid_from' => $this->day(-1)]);

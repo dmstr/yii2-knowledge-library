@@ -5,9 +5,10 @@
  *
  * The text is marked orange when it differs from the predecessor. The files
  * section lists the main files and attachments of the draft; each can be
- * marked for removal (`remove[<file-id>]`), files uploaded in this draft
- * (not taken over from the predecessor) are highlighted. New main files are
- * uploaded with `mainFiles[]`, new attachments with `attachments[<i>]` and
+ * marked for removal (`remove[<file-id>]`) and retitled (`titles[<file-id>]`),
+ * files uploaded in this draft (not taken over from the predecessor) are
+ * highlighted. New main files are uploaded with `mainFiles[<i>]` and the
+ * title `mainFileTitles[<i>]`, new attachments with `attachments[<i>]` and
  * the title `attachmentTitles[<i>]`. Attachments whose content is attached
  * to another item show a hint with a link to create an item of their own.
  *
@@ -67,6 +68,10 @@ $removeToggle = static function (File $file) use ($toggleStyle): string {
         ['class' => 'knowledge-library-wizard-file-toggle', 'style' => $toggleStyle]
     );
 };
+$titleLabels = [
+    File::KIND_MAIN => Yii::t('knowledge-library', 'Title of the main document'),
+    File::KIND_ATTACHMENT => Yii::t('knowledge-library', 'Title of the attachment'),
+];
 $rowOptions = static function (File $file, array $options) use ($isNew, $rowStyle): array {
     $new = $isNew($file);
     Html::addCssClass($options, 'knowledge-library-wizard-file');
@@ -78,11 +83,67 @@ $rowOptions = static function (File $file, array $options) use ($isNew, $rowStyl
 
     return $options;
 };
+// Row of a file of the draft: title input, file name, size, remove toggle.
+$fileRow = static function (File $file) use ($rowOptions, $removeToggle, $formatSize, $titleLabels, $monospace): string {
+    $main = $file->kind === File::KIND_MAIN;
+    $options = ['data-kl-kind' => $file->kind];
+    if ($main) {
+        $options['data-kl-main-file'] = '1';
+    }
+
+    return Html::beginTag('div', $rowOptions($file, $options))
+        . Html::tag('i', '', ['class' => $main ? 'fa fa-file-o' : 'fa fa-paperclip', 'style' => 'width: 16px'])
+        . Html::textInput('titles[' . $file->id . ']', $file->title, [
+            'class' => 'form-control input-sm knowledge-library-wizard-file-title',
+            'placeholder' => $titleLabels[$file->kind] ?? null,
+            'aria-label' => $titleLabels[$file->kind] ?? null,
+            'maxlength' => 255,
+            'style' => 'flex: 1',
+        ])
+        . Html::tag('span', Html::encode($file->name), [
+            'class' => 'knowledge-library-wizard-file-name',
+            'style' => 'flex: 1; ' . $monospace . '; font-size: 13px',
+        ])
+        . Html::tag('span', Html::encode($formatSize($file->size)), ['style' => 'color: #777'])
+        . $removeToggle($file)
+        . Html::endTag('div');
+};
+// Upload row: native file input and the title of the new file.
+$uploadRow = static function (string $fileName, string $titleName, string $inputClass, string $fileLabel, string $titleLabel) use ($accept): string {
+    return Html::tag(
+        'div',
+        Html::fileInput($fileName . '[0]', null, [
+            'accept' => $accept,
+            'class' => $inputClass,
+            'aria-label' => $fileLabel,
+            'style' => 'flex: 1',
+        ]) . Html::textInput($titleName . '[0]', null, [
+            'class' => 'form-control',
+            'placeholder' => $titleLabel,
+            'aria-label' => $titleLabel,
+            'maxlength' => 255,
+            'style' => 'flex: 1',
+        ]),
+        [
+            'class' => 'knowledge-library-wizard-upload',
+            'data-kl-upload-row' => '1',
+            'style' => 'display: flex; align-items: center; gap: 12px; margin: 4px 0 6px',
+        ]
+    );
+};
+$addButton = static function (string $label, string $class) use ($addStyle): string {
+    return Html::button('<i class="fa fa-plus"></i> ' . Html::encode($label), [
+        'type' => 'button',
+        'class' => 'knowledge-library-wizard-add-upload ' . $class,
+        // Shown by the inline script; without JavaScript one row is available.
+        'style' => $addStyle . '; display: none',
+    ]);
+};
 
 $this->registerJs(<<<'JS'
 var wizard = '#knowledge-library-version-wizard';
 jQuery(wizard + ' .knowledge-library-wizard-remove').hide();
-jQuery(wizard + ' .knowledge-library-wizard-add-attachment').show();
+jQuery(wizard + ' .knowledge-library-wizard-add-upload').show();
 jQuery(document).on('change', wizard + ' .knowledge-library-wizard-remove', function () {
     var box = jQuery(this);
     var row = box.closest('[data-kl-file-row]');
@@ -107,15 +168,16 @@ jQuery(document).on('change', wizard + ' .knowledge-library-wizard-main-upload',
     }
     jQuery(this).closest('form').find('[data-kl-blocks-next]').trigger('change');
 });
-jQuery(document).on('click', wizard + ' .knowledge-library-wizard-add-attachment', function (event) {
+jQuery(document).on('click', wizard + ' .knowledge-library-wizard-add-upload', function (event) {
     event.preventDefault();
-    var list = jQuery(this).closest('.knowledge-library-wizard-attachments').find('.knowledge-library-wizard-attachment-uploads');
-    var index = list.children('.knowledge-library-wizard-attachment-upload').length;
-    var row = list.children('.knowledge-library-wizard-attachment-upload').first().clone();
+    var list = jQuery(this).prevAll('[data-kl-upload-list]').first();
+    var index = list.children('[data-kl-upload-row]').length;
+    var row = list.children('[data-kl-upload-row]').first().clone();
     row.find('input').each(function () {
         var input = jQuery(this);
         input.attr('name', input.attr('name').replace(/\[\d+\]$/, '[' + index + ']'));
         input.val('');
+        input.removeAttr('data-kl-main-file');
     });
     list.append(row);
 });
@@ -149,30 +211,22 @@ JS, View::POS_READY, 'knowledge-library-wizard-files');
                 <span style="color: #777; font-weight: 400"><?= Html::encode(Yii::t('knowledge-library', '(optional, several possible)')) ?></span>
             </div>
             <?php foreach ($mainFiles as $file): ?>
-                <?= Html::beginTag('div', $rowOptions($file, ['data-kl-main-file' => '1', 'data-kl-kind' => File::KIND_MAIN])) ?>
-                    <i class="fa fa-file-o" style="width: 16px"></i>
-                    <span class="knowledge-library-wizard-file-name" style="flex: 1; <?= $monospace ?>; font-size: 13px"><?= Html::encode($file->name) ?></span>
-                    <span style="color: #777"><?= Html::encode($formatSize($file->size)) ?></span>
-                    <?= $removeToggle($file) ?>
-                <?= Html::endTag('div') ?>
+                <?= $fileRow($file) ?>
             <?php endforeach ?>
             <?php if ($mainFiles === []): ?>
                 <div class="text-muted" style="margin-bottom: 6px"><?= Html::encode(Yii::t('knowledge-library', 'No main documents.')) ?></div>
             <?php endif ?>
-            <div class="knowledge-library-wizard-main-upload-row" style="margin: 8px 0 0">
-                <?= Html::label(
-                    Html::encode(Yii::t('knowledge-library', 'Add main documents')),
+            <?php // Native file inputs: work without JavaScript. ?>
+            <div class="knowledge-library-wizard-main-uploads" data-kl-upload-list="1">
+                <?= $uploadRow(
+                    'mainFiles',
+                    'mainFileTitles',
                     'knowledge-library-wizard-main-upload',
-                    ['style' => 'display: block; font-weight: 400; margin-bottom: 4px']
+                    Yii::t('knowledge-library', 'Add main document'),
+                    $titleLabels[File::KIND_MAIN]
                 ) ?>
-                <?php // Native file input: works without JavaScript, several files at once. ?>
-                <?= Html::fileInput('mainFiles[]', null, [
-                    'id' => 'knowledge-library-wizard-main-upload',
-                    'multiple' => true,
-                    'accept' => $accept,
-                    'class' => 'knowledge-library-wizard-main-upload',
-                ]) ?>
             </div>
+            <?= $addButton(Yii::t('knowledge-library', 'Add main document'), 'knowledge-library-wizard-add-main-file') ?>
         </div>
 
         <div class="knowledge-library-wizard-attachments" style="margin-top: 22px">
@@ -181,15 +235,7 @@ JS, View::POS_READY, 'knowledge-library-wizard-files');
                 <span style="color: #777; font-weight: 400"><?= Html::encode(Yii::t('knowledge-library', '(optional)')) ?></span>
             </div>
             <?php foreach ($attachments as $file): ?>
-                <?= Html::beginTag('div', $rowOptions($file, ['data-kl-kind' => File::KIND_ATTACHMENT])) ?>
-                    <i class="fa fa-paperclip" style="width: 16px"></i>
-                    <span class="knowledge-library-wizard-file-name" style="flex: 1">
-                        <?= Html::encode($file->title ?? $file->name) ?>
-                        <span style="<?= $monospace ?>; font-size: 12px; color: #777; margin-left: 6px"><?= Html::encode($file->name) ?></span>
-                    </span>
-                    <span style="color: #777"><?= Html::encode($formatSize($file->size)) ?></span>
-                    <?= $removeToggle($file) ?>
-                <?= Html::endTag('div') ?>
+                <?= $fileRow($file) ?>
                 <?php foreach ($service->findDuplicates($file) as $duplicate): ?>
                     <div class="knowledge-library-wizard-duplicate" style="margin: 0 0 8px; background: #f39c12; border-left: 5px solid #c87f0a; color: #fff; border-radius: 3px; padding: 12px 15px">
                         <?= Html::encode(Yii::t('knowledge-library', 'This file is already attached to "{title}".', [
@@ -197,7 +243,7 @@ JS, View::POS_READY, 'knowledge-library-wizard-files');
                         ])) ?>
                         <?= Html::a(
                             Html::encode(Yii::t('knowledge-library', 'Create as separate knowledge object')),
-                            ['item/create', 'title' => $file->title ?? $file->name],
+                            ['item/create', 'title' => $file->getDisplayName()],
                             ['class' => 'knowledge-library-wizard-duplicate-create', 'style' => 'color: #fff; text-decoration: underline; margin-left: 6px']
                         ) ?>
                     </div>
@@ -206,31 +252,16 @@ JS, View::POS_READY, 'knowledge-library-wizard-files');
             <?php if ($attachments === []): ?>
                 <div class="text-muted" style="margin-bottom: 6px"><?= Html::encode(Yii::t('knowledge-library', 'No attachments.')) ?></div>
             <?php endif ?>
-            <div class="knowledge-library-wizard-attachment-uploads">
-                <div class="knowledge-library-wizard-attachment-upload" style="display: flex; align-items: center; gap: 12px; margin: 4px 0 6px">
-                    <?= Html::fileInput('attachments[0]', null, [
-                        'accept' => $accept,
-                        'class' => 'knowledge-library-wizard-attachment-file',
-                        'aria-label' => Yii::t('knowledge-library', 'Add attachment'),
-                        'style' => 'flex: 1',
-                    ]) ?>
-                    <?= Html::textInput('attachmentTitles[0]', null, [
-                        'class' => 'form-control',
-                        'placeholder' => Yii::t('knowledge-library', 'Title of the attachment'),
-                        'aria-label' => Yii::t('knowledge-library', 'Title of the attachment'),
-                        'style' => 'flex: 1',
-                    ]) ?>
-                </div>
+            <div class="knowledge-library-wizard-attachment-uploads" data-kl-upload-list="1">
+                <?= $uploadRow(
+                    'attachments',
+                    'attachmentTitles',
+                    'knowledge-library-wizard-attachment-file',
+                    Yii::t('knowledge-library', 'Add attachment'),
+                    $titleLabels[File::KIND_ATTACHMENT]
+                ) ?>
             </div>
-            <?= Html::button(
-                '<i class="fa fa-plus"></i> ' . Html::encode(Yii::t('knowledge-library', 'Add attachment')),
-                [
-                    'type' => 'button',
-                    'class' => 'knowledge-library-wizard-add-attachment',
-                    // Shown by the inline script; without JavaScript one row is available.
-                    'style' => $addStyle . '; display: none',
-                ]
-            ) ?>
+            <?= $addButton(Yii::t('knowledge-library', 'Add attachment'), 'knowledge-library-wizard-add-attachment') ?>
         </div>
 
         <div class="knowledge-library-wizard-file-limits help-block" style="margin-top: 12px">

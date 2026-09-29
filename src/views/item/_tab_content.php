@@ -68,9 +68,10 @@ $monospace = 'font-family: ui-monospace, Menlo, monospace; font-size: 13px';
             <tbody>
             <?php foreach ($mainFiles as $file): ?>
                 <tr>
-                    <td style="<?= $monospace ?>">
-                        <i class="fa fa-file-o" style="width: 20px"></i><?= Html::a(Html::encode($file->name), ['file/download', 'id' => $file->id]) ?>
+                    <td>
+                        <i class="fa fa-file-o" style="width: 20px"></i><?= Html::a(Html::encode($file->getDisplayName()), ['file/download', 'id' => $file->id]) ?>
                     </td>
+                    <td style="<?= $monospace ?>; color: #555"><?= Html::encode($file->name) ?></td>
                     <td style="width: 90px; color: #555"><?= Html::encode($formatSize($file->size)) ?></td>
                 </tr>
             <?php endforeach ?>
@@ -87,7 +88,7 @@ $monospace = 'font-family: ui-monospace, Menlo, monospace; font-size: 13px';
             <?php foreach ($attachments as $file): ?>
                 <tr>
                     <td>
-                        <i class="fa fa-paperclip" style="width: 20px"></i><?= Html::a(Html::encode($file->title ?? $file->name), ['file/download', 'id' => $file->id]) ?>
+                        <i class="fa fa-paperclip" style="width: 20px"></i><?= Html::a(Html::encode($file->getDisplayName()), ['file/download', 'id' => $file->id]) ?>
                     </td>
                     <td style="<?= $monospace ?>; color: #555"><?= Html::encode($file->name) ?></td>
                     <td style="width: 90px; color: #555"><?= Html::encode($formatSize($file->size)) ?></td>

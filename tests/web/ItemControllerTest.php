@@ -1122,17 +1122,19 @@ class ItemControllerTest extends WebTestCase
         $item = $this->createItem();
         $version = $this->createPublishedVersion($item, ['valid_from' => '2020-01-01']);
         $main = $this->createFile($version, ['kind' => 'main', 'name' => 'law <1>.pdf', 'size' => 2048]);
+        $titledMain = $this->createFile($version, ['kind' => 'main', 'title' => 'Forest law', 'name' => 'forest.pdf', 'position' => 1]);
         $attachment = $this->createFile($version, ['title' => 'Form <A>', 'name' => 'form.pdf', 'size' => 1024]);
         $this->loginAs(Module::ROLE_EDITOR);
 
         $html = $this->assertPage($this->get('item/view', ['id' => $item->id, 'tab' => 'content']));
 
-        foreach ([[$main, 'law &lt;1&gt;.pdf'], [$attachment, 'Form &lt;A&gt;']] as [$file, $label]) {
+        foreach ([[$main, 'law &lt;1&gt;.pdf'], [$titledMain, 'Forest law'], [$attachment, 'Form &lt;A&gt;']] as [$file, $label]) {
             $this->assertStringContainsString(
                 '<a href="' . Html::encode(Url::to(['/knowledge-library/file/download', 'id' => $file->id])) . '">' . $label . '</a>',
                 $html
             );
         }
+        $this->assertMatchesRegularExpression('#knowledge-library-content-main-files.*?Forest law</a>\s*</td>\s*<td[^>]*>forest\.pdf</td>#s', $html);
         $this->assertMatchesRegularExpression('#knowledge-library-content-attachments.*?form\.pdf</td>#s', $html);
         $this->assertStringContainsString(Html::encode(Yii::$app->formatter->asShortSize(2048, 1)), $html);
         $this->assertStringNotContainsString('No main documents.', $html);

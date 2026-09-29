@@ -17,7 +17,7 @@ The library stores knowledge **types** and **topics**, knowledge **items**, thei
 | Topic | `Topic` | Keyword; an item can be assigned to several topics (`Item::$topicIds`) |
 | Item | `Item` | The knowledge item with title, summary, source information and archive flag |
 | Version | `Version` | Numbered content version of an item: Markdown text and/or files, validity dates, review and publication data |
-| File | `File` | File of a version in the file storage, either a `main` file (carries the content) or an `attachment` |
+| File | `File` | File of a version in the file storage, either a `main` file (carries the content) or an `attachment`, with an optional title shown instead of the file name |
 | Relation | `Relation` | Directed relation between two items: `based_on`, `supplements` or `replaces` |
 | History | `History` | Change log entry of an item, optionally for one version |
 
@@ -157,7 +157,7 @@ The views use `yii\bootstrap\ActiveForm` and `yii\grid\GridView` with Bootstrap 
 
 New versions are created in a wizard that works on the draft of the item (at most one per item). A new draft takes over the text, the files and the details (title, summary, topics) of the latest published version. The wizard has four steps, each saved on its own; "Save as draft" returns to the detail page in every step and writes the history entry `draft_saved`:
 
-1. **Content**: Markdown text, main files (`mainFiles[]`, several at once) and attachments (`attachments[<i>]` with the title `attachmentTitles[<i>]`). Files of the draft can be removed (`remove[<file-id>]=1`); files uploaded in the draft are highlighted. An attachment whose content is already attached to another item shows a hint with a link to create an item of its own from it; the hint does not block. The step is complete with a text or at least one main file, attachments alone do not count. Rejected uploads are shown with the reason and keep the wizard on the step.
+1. **Content**: Markdown text, main files (`mainFiles[<i>]` with the title `mainFileTitles[<i>]`) and attachments (`attachments[<i>]` with the title `attachmentTitles[<i>]`); further upload rows are added with a button. Files of the draft can be removed (`remove[<file-id>]=1`) and retitled (`titles[<file-id>]`, empty removes the title; titles longer than 255 characters are rejected like uploads); files uploaded in the draft are highlighted. Retitling a file taken over from the predecessor changes the row of the draft only. An attachment whose content is already attached to another item shows a hint with a link to create an item of its own from it; the hint does not block. The step is complete with a text or at least one main file, attachments alone do not count. Rejected uploads are shown with the reason and keep the wizard on the step.
 2. **Validity**: Valid From and Valid Until for types with a validity period, with the consequences for the previous version and a preview of the timeline. A correction shows the period of the corrected version read-only.
 3. **Details**: title, topics and summary; they are applied to the item when the version is published.
 4. **Check**: summary of the version and "Publish" for types without review; for types with review the reviewing person (`reviewer`), an optional message (`message`) and "Submit for approval" (`submit`).
@@ -230,7 +230,7 @@ All three routes accept GET only; other methods are answered with 405.
 
 **Visibility.** An item is shown if it is not archived and has a version valid today (`ItemQuery::validAt()`, see "Effective state"): a published version whose validity period contains today, or for types without validity period the published version with the highest number. Drafts, versions in review, historical, upcoming and withdrawn versions are never shown. Today is `date('Y-m-d')` in the time zone of the application. Nothing is cached: publishing, withdrawing, correcting, archiving or restoring changes the pages with the next request.
 
-**Detail page.** The page shows title, type, topics, validity ("Valid from <from> until <until>", "open-ended" without end; "Valid since <publication date>" for types without validity period), source, source reference and source URL (as link), the summary, the text of the valid version rendered as Markdown (`MarkdownHelper::render()`, HTML in the text is shown as text) its main files and attachments with size and download link, and the related items (outgoing and incoming relations, labelled as seen from the item and grouped in the order of the relation types, the items sorted by title). Relations to items the frontend does not show (archived or without a version valid today) are left out. Empty fields and empty sections are left out. The markup is plain semantic HTML without JavaScript: the list is `<ul class="knowledge-items">`, the detail page `<article class="knowledge-item" data-item-id="...">` with a `<dl>` of the fields and the sections `knowledge-summary`, `knowledge-content`, `knowledge-files` and `knowledge-relations` (a `<dl class="knowledge-relations-list">` with the label as `<dt>` and one `<dd>` link per related item). The views set `$this->title` and the breadcrumbs and are rendered in the layout configured for the module.
+**Detail page.** The page shows title, type, topics, validity ("Valid from <from> until <until>", "open-ended" without end; "Valid since <publication date>" for types without validity period), source, source reference and source URL (as link), the summary, the text of the valid version rendered as Markdown (`MarkdownHelper::render()`, HTML in the text is shown as text) its main files and attachments (title as link text with the file name next to it, the file name as link text without title) with size and download link, and the related items (outgoing and incoming relations, labelled as seen from the item and grouped in the order of the relation types, the items sorted by title). Relations to items the frontend does not show (archived or without a version valid today) are left out. Empty fields and empty sections are left out. The markup is plain semantic HTML without JavaScript: the list is `<ul class="knowledge-items">`, the detail page `<article class="knowledge-item" data-item-id="...">` with a `<dl>` of the fields and the sections `knowledge-summary`, `knowledge-content`, `knowledge-files` and `knowledge-relations` (a `<dl class="knowledge-relations-list">` with the label as `<dt>` and one `<dd>` link per related item). The views set `$this->title` and the breadcrumbs and are rendered in the layout configured for the module.
 
 **Not found.** Unknown IDs, archived items and items without a version valid today all answer with 404 ("The requested knowledge object does not exist."), without telling the cases apart. The list without valid items answers with 200 and a hint.
 
@@ -260,6 +260,7 @@ The package brings the following migrations:
 | `m260928_223000_knowledge_library_history_details` | Structured details of history entries (`history.details`) |
 | `m260928_223100_knowledge_library_routes_3` | Route permissions of review, withdrawal, correction and archive |
 | `i18n/m260928_100200_knowledge_library_translations` | Optional German translations, see [Translations](#translations) |
+| `i18n/m260929_120000_knowledge_library_translations_2` | Optional German translations of the titles of main documents |
 
 Add the migration path to the migrate controller of your console application:
 
@@ -278,7 +279,7 @@ Add the migration path to the migrate controller of your console application:
 
 Messages use the category `knowledge-library`. The package registers no message source of its own; the category is served by the message source the application configured for it.
 
-phd5 applications map `'*'` to a `DbMessageSource` and need no further configuration. The German texts of the package are provided by an optional migration; add its path to the migrate controller next to the schema migrations:
+phd5 applications map `'*'` to a `DbMessageSource` and need no further configuration. The German texts of the package are provided by optional migrations (`src/migrations/i18n`, one per release that adds texts); add their path to the migrate controller next to the schema migrations:
 
 ```php
 'controllerMap' => [
@@ -292,7 +293,7 @@ phd5 applications map `'*'` to a `DbMessageSource` and need no further configura
 ],
 ```
 
-The migration writes its source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the migration's translations and those of its source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
+Each migration writes its source messages and German translations into the tables of the `DbMessageSource` serving `knowledge-library` (`sourceMessageTable` and `messageTable`). Existing translations are never overwritten, so changes made by editors are kept, and running it again only adds missing rows. Languages missing in a `{{%language}}` table are skipped. `down` removes the migration's translations and those of its source messages that have no other translations left. If the category is not served by a `DbMessageSource`, the migration does nothing.
 
 Applications without a database message source must configure a message source for `knowledge-library*` themselves; providing the translations is then up to the application:
 
