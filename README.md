@@ -14,7 +14,7 @@ The library stores knowledge **types** and **topics**, knowledge **items**, thei
 
 | Entity | Model | Purpose |
 | --- | --- | --- |
-| Type | `Type` | Kind of item; defines whether versions have a validity period (`has_validity_period`) and whether publishing requires a review (`requires_review`) |
+| Type | `Type` | Kind of item; defines whether versions have a validity period (`has_validity_period`, locked once items of the type have versions) and whether publishing requires a review (`requires_review`) |
 | Topic | `Topic` | Keyword; an item can be assigned to several topics (`Item::$topicIds`) |
 | Item | `Item` | The knowledge item with title, summary, source information and archive flag |
 | Version | `Version` | Numbered content version of an item: Markdown text and/or files, validity dates, review and publication data |
@@ -151,7 +151,7 @@ The backend module provides the following controllers. Routes are relative to th
 | `item/restore` | Restore an archived item, body `reason` optional (POST only) |
 | `type/index` | List of types |
 | `type/create` | Create a type |
-| `type/update` | Edit a type |
+| `type/update` | Edit a type; the validity period cannot be changed once items of the type have versions |
 | `type/delete` | Delete a type that is not used by any item (POST only) |
 | `topic/index` | List of topics |
 | `topic/create` | Create a topic |
@@ -180,7 +180,7 @@ New versions are created in a wizard that works on the draft of the item (at mos
 1. **Content**: Markdown text, main files (`mainFiles[<i>]` with the title `mainFileTitles[<i>]`) and attachments (`attachments[<i>]` with the title `attachmentTitles[<i>]`); further upload rows are added with a button. Files of the draft can be removed (`remove[<file-id>]=1`) and retitled (`titles[<file-id>]`, empty removes the title; titles longer than 255 characters are rejected like uploads); files uploaded in the draft are highlighted. Retitling a file taken over from the predecessor changes the row of the draft only. An attachment whose content is already attached to another item shows a hint with a link to create an item of its own from it; the hint does not block. The step is complete with a text or at least one main file, attachments alone do not count. Rejected uploads are shown with the reason and keep the wizard on the step.
 2. **Validity**: Valid From and Valid Until for types with a validity period, with the consequences for the previous version and a preview of the timeline. A correction shows the period of the corrected version read-only.
 3. **Details**: title, topics and summary; they are applied to the item when the version is published.
-4. **Check**: summary of the version and "Publish" for types without review; for types with review the reviewing person (`reviewer`), an optional message (`message`) and "Submit for approval" (`submit`).
+4. **Check**: summary of the version and "Publish" for types without review; for types with review the reviewing person (`reviewer`), an optional message (`message`) and "Submit for approval" (`submit-for-review`).
 
 The wizard of a correction is titled "Correct version n" with the number of the corrected version. Drafts of archived items cannot be continued, only discarded.
 
@@ -250,7 +250,7 @@ All three routes accept GET only; other methods are answered with 405.
 
 **Visibility.** An item is shown if it is not archived and has a version valid today (`ItemQuery::validAt()`, see "Effective state"): a published version whose validity period contains today, or for types without validity period the published version with the highest number. Drafts, versions in review, historical, upcoming and withdrawn versions are never shown. Today is `date('Y-m-d')` in the time zone of the application. Nothing is cached: publishing, withdrawing, correcting, archiving or restoring changes the pages with the next request.
 
-**Detail page.** The page shows title, type, topics, validity ("Valid from <from> until <until>", "open-ended" without end; "Valid since <publication date>" for types without validity period), source, source reference and source URL (as link), the summary, the text of the valid version rendered as Markdown (`MarkdownHelper::render()`, HTML in the text is shown as text) its main files and attachments (title as link text with the file name next to it, the file name as link text without title) with size and download link, and the related items (outgoing and incoming relations, labelled as seen from the item and grouped in the order of the relation types, the items sorted by title). Relations to items the frontend does not show (archived or without a version valid today) are left out. Empty fields and empty sections are left out. The markup is plain semantic HTML without JavaScript: the list is `<ul class="knowledge-items">`, the detail page `<article class="knowledge-item" data-item-id="...">` with a `<dl>` of the fields and the sections `knowledge-summary`, `knowledge-content`, `knowledge-files` and `knowledge-relations` (a `<dl class="knowledge-relations-list">` with the label as `<dt>` and one `<dd>` link per related item). The views set `$this->title` and the breadcrumbs and are rendered in the layout configured for the module.
+**Detail page.** The page shows title, type, topics, validity ("Valid from <from> until <until>", "open-ended" without end; "Valid since <publication date>" for types without validity period), source, source reference and source URL (as link), the summary, the text of the valid version rendered as Markdown (`MarkdownHelper::render()`: HTML in the text is shown as text, links and images keep only safe URL schemes) its main files and attachments (title as link text with the file name next to it, the file name as link text without title) with size and download link, and the related items (outgoing and incoming relations, labelled as seen from the item and grouped in the order of the relation types, the items sorted by title). Relations to items the frontend does not show (archived or without a version valid today) are left out. Empty fields and empty sections are left out. The markup is plain semantic HTML without JavaScript: the list is `<ul class="knowledge-items">`, the detail page `<article class="knowledge-item" data-item-id="...">` with a `<dl>` of the fields and the sections `knowledge-summary`, `knowledge-content`, `knowledge-files` and `knowledge-relations` (a `<dl class="knowledge-relations-list">` with the label as `<dt>` and one `<dd>` link per related item). The views set `$this->title` and the breadcrumbs and are rendered in the layout configured for the module.
 
 **Not found.** Unknown IDs, archived items and items without a version valid today all answer with 404 ("The requested knowledge object does not exist."), without telling the cases apart. The list without valid items answers with 200 and a hint.
 
@@ -314,7 +314,7 @@ Uploads are checked against `allowedExtensions` (also by the MIME type detected 
 
 A new version takes over the files of its predecessor as new file rows pointing to the same stored file, the storage is not copied. A stored file is deleted only when no file row refers to it anymore: removing a taken-over file from a draft deletes the row only, removing a file uploaded in the draft deletes the stored file as well. Deleting an item deletes all its stored files.
 
-The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file with its original name, PDFs (`inlineMimeTypes`) for display in the browser (`Content-Disposition: inline`) and all other files as download (`attachment`). The frontend module delivers the files of the versions valid today through its own `file/download`, see "Frontend pages".
+The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file with its original name and `X-Content-Type-Options: nosniff`, PDFs (`inlineMimeTypes`) for display in the browser (`Content-Disposition: inline`) and all other files as download (`attachment`). The frontend module delivers the files of the versions valid today through its own `file/download`, see "Frontend pages".
 
 ## Migrations
 
@@ -332,6 +332,7 @@ The package brings the following migrations:
 | `m261007_100000_knowledge_library_mcp_rbac` | Permission `knowledge-mcp` of the MCP module |
 | `i18n/m260928_100200_knowledge_library_translations` | Optional German translations, see [Translations](#translations) |
 | `i18n/m260929_120000_knowledge_library_translations_2` | Optional German translations of the titles of main documents |
+| `i18n/m261007_120000_knowledge_library_translations_3` | Optional German translation of the validity period lock of types |
 
 Add the migration path to the migrate controller of your console application:
 

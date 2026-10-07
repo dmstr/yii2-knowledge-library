@@ -10,8 +10,8 @@ use yii\db\Query;
  * Current state of a knowledge item as shown in lists, derived from its
  * archive flag and its versions.
  *
- * Precedence: archived, in review, draft (also without any version), no valid
- * version, valid version. The states of a whole page are resolved at once
+ * Precedence: archived, valid version, in review, draft (also without any
+ * version), no valid version. The states of a whole page are resolved at once
  * with forItems().
  *
  * @property-read string $state one of the state constants
