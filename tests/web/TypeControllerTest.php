@@ -265,6 +265,41 @@ class TypeControllerTest extends WebTestCase
         $this->assertSame(2, substr_count($html, 'checked'));
     }
 
+    public function testValidityPeriodCannotBeChangedOnceItemsHaveVersions(): void
+    {
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
+        $this->createVersion($this->createItem(['type_id' => $type->id]));
+        $this->loginAs(Module::ROLE_ADMIN);
+
+        $html = $this->assertPage($this->get('type/update', ['id' => $type->id]));
+        $this->assertMatchesRegularExpression('/<input type="checkbox" id="type-has_validity_period"[^>]* checked disabled>/', $html);
+        $this->assertMatchesRegularExpression('/<input type="checkbox" id="type-requires_review"[^>]* checked>/', $html);
+        $this->assertStringContainsString(Type::validityPeriodLockedMessage(), $html);
+
+        // A manipulated request is rejected by the model, nothing is saved.
+        $html = $this->assertPage($this->post('type/update', ['Type' => [
+            'name' => $type->name,
+            'has_validity_period' => '0',
+            'requires_review' => '0',
+        ]], ['id' => $type->id]));
+        $this->assertStringContainsString(Type::validityPeriodLockedMessage(), $html);
+        $type->refresh();
+        $this->assertTrue((bool)$type->has_validity_period);
+        $this->assertTrue((bool)$type->requires_review);
+
+        // The review flag and the name are still editable; the disabled
+        // checkbox sends no value and keeps the stored one.
+        $this->post('type/update', ['Type' => [
+            'name' => 'Renamed',
+            'requires_review' => '0',
+        ]], ['id' => $type->id]);
+        $this->assertRedirectsTo(['type/index']);
+        $type->refresh();
+        $this->assertTrue((bool)$type->has_validity_period);
+        $this->assertFalse((bool)$type->requires_review);
+        $this->assertSame('Renamed', $type->name);
+    }
+
     public function testDeleteUnusedType(): void
     {
         $type = $this->createType(['name' => 'Law']);

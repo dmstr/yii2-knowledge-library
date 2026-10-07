@@ -48,6 +48,7 @@ class Type extends ActiveRecord
             ['name', 'unique'],
             [['has_validity_period', 'requires_review'], 'default', 'value' => true],
             [['has_validity_period', 'requires_review'], 'boolean'],
+            ['has_validity_period', 'validateValidityPeriodLock'],
         ];
     }
 
@@ -63,6 +64,59 @@ class Type extends ActiveRecord
             'created_by' => Yii::t('knowledge-library', 'Created By'),
             'updated_by' => Yii::t('knowledge-library', 'Updated By'),
         ];
+    }
+
+    /**
+     * Rejects a change of the validity period once items of the type have
+     * versions: which version of an item is valid depends on it (dates or
+     * highest number, see VersionQuery::validAt()), so a change would
+     * silently alter what readers see and leave versions with or without
+     * dates the type no longer expects.
+     */
+    public function validateValidityPeriodLock(string $attribute): void
+    {
+        if ($this->getIsNewRecord() || !$this->isAttributeChanged($attribute, false)) {
+            return;
+        }
+
+        if ($this->hasVersions()) {
+            $this->addError($attribute, static::validityPeriodLockedMessage());
+        }
+    }
+
+    /**
+     * Message for a change of the validity period of a locked type, see
+     * isValidityPeriodLocked().
+     */
+    public static function validityPeriodLockedMessage(): string
+    {
+        return Yii::t(
+            'knowledge-library',
+            'The validity period cannot be changed once items of this type have versions.'
+        );
+    }
+
+    /**
+     * Whether the validity period can no longer be changed because items of
+     * the type have versions.
+     */
+    public function isValidityPeriodLocked(): bool
+    {
+        return !$this->getIsNewRecord() && $this->hasVersions();
+    }
+
+    /**
+     * Whether any item of this type has a version (of any status).
+     */
+    public function hasVersions(): bool
+    {
+        return Version::find()
+            ->innerJoin(
+                ['kl_type_item' => Item::tableName()],
+                '[[kl_type_item.id]] = ' . Version::tableName() . '.[[item_id]]'
+            )
+            ->andWhere(['kl_type_item.type_id' => $this->id])
+            ->exists();
     }
 
     public function getItems(): ItemQuery

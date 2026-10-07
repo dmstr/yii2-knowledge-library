@@ -37,6 +37,40 @@ class TypeTopicTest extends TestCase
         $this->assertEquals(1, $type->requires_review);
     }
 
+    public function testValidityPeriodIsLockedOnceItemsHaveVersions(): void
+    {
+        $type = $this->createType(['has_validity_period' => true, 'requires_review' => true]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $this->assertFalse($type->isValidityPeriodLocked());
+
+        // Without versions the flag can still be changed back and forth.
+        $type->has_validity_period = false;
+        $this->assertTrue($type->save(), json_encode($type->getErrors()));
+        $type->has_validity_period = true;
+        $this->assertTrue($type->save(), json_encode($type->getErrors()));
+
+        $this->createVersion($item);
+        $type->refresh();
+        $this->assertTrue($type->isValidityPeriodLocked());
+
+        $type->has_validity_period = false;
+        $this->assertFalse($type->save());
+        $this->assertSame(
+            Type::validityPeriodLockedMessage(),
+            $type->getFirstError('has_validity_period')
+        );
+        $this->assertEquals(1, Type::findOne($type->id)->has_validity_period);
+
+        // The unchanged flag and the other attributes still save.
+        $type->has_validity_period = '1';
+        $type->requires_review = false;
+        $type->name = 'Renamed';
+        $this->assertTrue($type->save(), json_encode($type->getErrors()));
+        $type->refresh();
+        $this->assertEquals(0, $type->requires_review);
+        $this->assertSame('Renamed', $type->name);
+    }
+
     public function testTopicNameIsRequiredAndUnique(): void
     {
         $this->assertFalse((new Topic())->validate());
