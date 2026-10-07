@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 20:58:25 UTC
 
 namespace dmstr\knowledgeLibrary\tests\unit;
 
@@ -386,6 +387,29 @@ class FileServiceTest extends TestCase
         $this->assertSame('7', (string)$response->getHeaders()->get('Content-Length'));
         [$stream] = $response->stream;
         $this->assertSame('Content', stream_get_contents($stream));
+        fclose($stream);
+    }
+
+    public function testSendDeliversInlineMimeTypesForDisplay(): void
+    {
+        Yii::$app->set('request', ['class' => Request::class, 'cookieValidationKey' => 'test']);
+        $service = $this->service();
+        $version = $this->createVersion($this->createItem());
+        $pdf = $service->store($version, $this->upload('Report.pdf', "%PDF-1.4\n%%EOF\n"), File::KIND_MAIN);
+        $this->assertFalse($pdf->getIsNewRecord(), json_encode($pdf->getErrors()));
+
+        $response = new Response();
+        $service->send($pdf, $response);
+        $this->assertStringStartsWith('inline; filename="Report.pdf"', (string)$response->getHeaders()->get('Content-Disposition'));
+        $this->assertSame('application/pdf', $response->getHeaders()->get('Content-Type'));
+        [$stream] = $response->stream;
+        fclose($stream);
+
+        // The list is the module's; an application may empty it to download everything.
+        $response = new Response();
+        $this->service(['inlineMimeTypes' => []])->send($pdf, $response);
+        $this->assertStringStartsWith('attachment; filename="Report.pdf"', (string)$response->getHeaders()->get('Content-Disposition'));
+        [$stream] = $response->stream;
         fclose($stream);
     }
 

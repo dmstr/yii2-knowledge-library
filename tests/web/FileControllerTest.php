@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 20:58:25 UTC
 
 namespace dmstr\knowledgeLibrary\tests\web;
 
@@ -30,7 +31,7 @@ class FileControllerTest extends WebTestCase
         $response = $this->getResponse();
         $this->assertSame(200, $response->getStatusCode());
         $headers = $response->getHeaders();
-        $this->assertStringStartsWith('attachment; filename="Forest law \\"2026\\".pdf"', $headers->get('Content-Disposition'));
+        $this->assertStringStartsWith('inline; filename="Forest law \\"2026\\".pdf"', $headers->get('Content-Disposition'));
         $this->assertSame('application/pdf', $headers->get('Content-Type'));
         $this->assertEquals(strlen(self::CONTENT), $headers->get('Content-Length'));
         $this->assertSame(self::CONTENT, $this->readResponseStream($response));

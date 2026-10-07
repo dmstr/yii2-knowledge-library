@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 20:58:25 UTC
 
 namespace dmstr\knowledgeLibrary;
 
@@ -52,6 +53,15 @@ class Module extends \yii\base\Module
      * Maximum size of an uploaded version file in bytes.
      */
     public int $maxFileSize = 20 * 1024 * 1024;
+
+    /**
+     * MIME types of files that `file/download` sends for display in the
+     * browser (`Content-Disposition: inline`) instead of as download;
+     * every other file is sent as attachment.
+     *
+     * @var string[]
+     */
+    public array $inlineMimeTypes = ['application/pdf'];
 
     /**
      * Definition of a user provider object, registered as DI container

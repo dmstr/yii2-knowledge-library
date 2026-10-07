@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 20:58:25 UTC
 
 namespace dmstr\knowledgeLibrary\files;
 
@@ -274,8 +275,10 @@ class FileService
     }
 
     /**
-     * Sends the stored file as download (`Content-Disposition: attachment`)
-     * with its original name, MIME type and size.
+     * Sends the stored file with its original name, MIME type and size: for
+     * display in the browser (`Content-Disposition: inline`) if its MIME
+     * type is one of the module's `inlineMimeTypes`, e.g. a PDF, as download
+     * (`attachment`) otherwise.
      *
      * Whether the current user may download the file is up to the caller.
      *
@@ -289,9 +292,10 @@ class FileService
             return null;
         }
 
+        $mimeType = $file->mime_type ?: 'application/octet-stream';
         $options = [
-            'mimeType' => $file->mime_type ?: 'application/octet-stream',
-            'inline' => false,
+            'mimeType' => $mimeType,
+            'inline' => in_array($mimeType, $this->module->inlineMimeTypes, true),
         ];
         if ($file->size !== null) {
             $options['fileSize'] = (int)$file->size;

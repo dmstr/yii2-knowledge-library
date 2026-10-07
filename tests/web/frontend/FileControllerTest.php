@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 20:58:25 UTC
 
 namespace dmstr\knowledgeLibrary\tests\web\frontend;
 
@@ -18,7 +19,7 @@ class FileControllerTest extends FrontendWebTestCase
 
     private const UNKNOWN_ID = '00000000-0000-4000-8000-000000000000';
 
-    public function testFileOfTheValidVersionIsSentAsAttachment(): void
+    public function testPdfOfTheValidVersionIsSentForDisplay(): void
     {
         [, $version] = $this->createValidItem();
         $file = $this->createStoredFile($version, 'Forest law "2026".pdf');
@@ -30,7 +31,7 @@ class FileControllerTest extends FrontendWebTestCase
         $response = $this->getResponse();
         $this->assertSame(200, $response->getStatusCode());
         $headers = $response->getHeaders();
-        $this->assertStringStartsWith('attachment; filename="Forest law \\"2026\\".pdf"', $headers->get('Content-Disposition'));
+        $this->assertStringStartsWith('inline; filename="Forest law \\"2026\\".pdf"', $headers->get('Content-Disposition'));
         $this->assertSame('application/pdf', $headers->get('Content-Type'));
         $this->assertEquals(strlen(static::$fileContent), $headers->get('Content-Length'));
         $this->assertSame(static::$fileContent, $this->readResponseStream($response));
@@ -39,11 +40,16 @@ class FileControllerTest extends FrontendWebTestCase
     public function testAttachmentOfTheValidVersionIsSent(): void
     {
         [, $version] = $this->createValidItem();
-        $file = $this->createStoredFile($version, 'annex.pdf', ['kind' => File::KIND_ATTACHMENT, 'title' => 'Annex']);
+        $file = $this->createStoredFile($version, 'annex.docx', [
+            'kind' => File::KIND_ATTACHMENT,
+            'title' => 'Annex',
+            'mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ]);
         $this->loginAs('knowledge');
 
         $this->assertInstanceOf(Response::class, $this->get('file/download', ['id' => $file->id]));
-        $this->assertStringStartsWith('attachment; filename="annex.pdf"', $this->getResponse()->getHeaders()->get('Content-Disposition'));
+        // Only the inline MIME types of the module are displayed, everything else is a download.
+        $this->assertStringStartsWith('attachment; filename="annex.docx"', $this->getResponse()->getHeaders()->get('Content-Disposition'));
         $this->assertSame(static::$fileContent, $this->readResponseStream($this->getResponse()));
     }
 

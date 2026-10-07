@@ -115,6 +115,7 @@ The MCP module is optional; leave it out if the application has no AI clients.
 | `targetPath` | `'knowledge-library'` | Target directory inside the file storage |
 | `allowedExtensions` | `['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'txt', 'jpg', 'jpeg', 'png', 'gif', 'webp']` | File extensions allowed for uploaded version files (lower case, without dot); the MIME type detected from the content must match the extension |
 | `maxFileSize` | `20971520` (20 MB) | Maximum size of an uploaded version file in bytes, checked against the actual file size; the PHP and web server upload limits must allow at least this size |
+| `inlineMimeTypes` | `['application/pdf']` | MIME types that `file/download` sends for display in the browser (`Content-Disposition: inline`); all other files are sent as download (`attachment`). Empty to download everything |
 | `userProvider` | `null` | Definition of a user provider object (class name, configuration array or object), resolved via `Yii::createObject()`; `null` uses the default provider |
 
 ### Frontend module properties
@@ -253,7 +254,7 @@ All three routes accept GET only; other methods are answered with 405.
 
 **Not found.** Unknown IDs, archived items and items without a version valid today all answer with 404 ("The requested knowledge object does not exist."), without telling the cases apart. The list without valid items answers with 200 and a hint.
 
-**Downloads.** `file/download` delivers only files of the version valid today of an item that is not archived, as download (`Content-Disposition: attachment`) with the original name. Files of any other version (draft, in review, historical, upcoming, withdrawn) and files of archived items answer with 404 ("The requested file does not exist."), as do unknown IDs and missing stored files. The files are read from the file storage of the backend module (`backendModuleId`).
+**Downloads.** `file/download` delivers only files of the version valid today of an item that is not archived, with the original name: PDFs (the `inlineMimeTypes` of the backend module) for display in the browser (`Content-Disposition: inline`), all other files as download (`attachment`). Files of any other version (draft, in review, historical, upcoming, withdrawn) and files of archived items answer with 404 ("The requested file does not exist."), as do unknown IDs and missing stored files. The files are read from the file storage of the backend module (`backendModuleId`).
 
 ## MCP server
 
@@ -313,7 +314,7 @@ Uploads are checked against `allowedExtensions` (also by the MIME type detected 
 
 A new version takes over the files of its predecessor as new file rows pointing to the same stored file, the storage is not copied. A stored file is deleted only when no file row refers to it anymore: removing a taken-over file from a draft deletes the row only, removing a file uploaded in the draft deletes the stored file as well. Deleting an item deletes all its stored files.
 
-The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file as download (`Content-Disposition: attachment`) with its original name. The frontend module delivers the files of the versions valid today through its own `file/download`, see "Frontend pages".
+The package works directly on the flysystem filesystem, so permission layers of a wrapper component do not apply. The files are not registered in a file manager (no `storage_item` rows of eluhr/yii2-flysystem-rest-api, `storage_item_id` stays empty); they do not appear in the file manager, and its download or stream routes do not deliver them. Files are delivered only through `file/download`, which checks the route permission of the package (`knowledge-library_file_download`) and sends the file with its original name, PDFs (`inlineMimeTypes`) for display in the browser (`Content-Disposition: inline`) and all other files as download (`attachment`). The frontend module delivers the files of the versions valid today through its own `file/download`, see "Frontend pages".
 
 ## Migrations
 
