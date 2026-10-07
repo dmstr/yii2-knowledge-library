@@ -202,10 +202,13 @@ class Version extends ActiveRecord
             ['draft_title', 'required', 'on' => self::SCENARIO_DETAILS],
             ['draft_title', 'string', 'max' => 255],
             ['draft_summary', 'string'],
+            // Checked when the editor picks the topics; a topic deleted
+            // later must not block the transitions, see applyDraftDetails().
             [
                 'draftTopicIds',
                 'each',
                 'rule' => ['exist', 'targetClass' => Topic::class, 'targetAttribute' => 'id'],
+                'on' => self::SCENARIO_DETAILS,
             ],
             ['corrects_version_id', 'compare', 'compareAttribute' => 'id', 'operator' => '!=='],
             [
@@ -1521,7 +1524,13 @@ class Version extends ActiveRecord
         $item->title = $this->draft_title;
         $item->summary = $this->draft_summary;
         if ($this->draft_topic_ids !== null) {
-            $item->topicIds = $this->getDraftTopicIds();
+            // A topic deleted since the draft was saved (a topic used by a
+            // draft only can be deleted) is dropped instead of failing the
+            // publication with an error the editor cannot see in the form.
+            $topicIds = $this->getDraftTopicIds();
+            $item->topicIds = $topicIds === []
+                ? []
+                : Topic::find()->select('id')->andWhere(['id' => $topicIds])->column();
         }
 
         if (!$item->validate(['title', 'summary', 'topicIds']) || !$item->save(false)) {

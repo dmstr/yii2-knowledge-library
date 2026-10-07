@@ -261,4 +261,23 @@ class PublishTest extends TestCase
             $version->getFirstError('valid_from')
         );
     }
+
+    public function testPublishDropsTopicsDeletedSinceTheDraftWasSaved(): void
+    {
+        $type = $this->createType(['requires_review' => false, 'has_validity_period' => false]);
+        $item = $this->createItem(['type_id' => $type->id]);
+        $kept = $this->createTopic(['name' => 'Kept']);
+        $deleted = $this->createTopic(['name' => 'Deleted']);
+        $draft = $this->createVersion($item, [
+            'draft_title' => 'Published title',
+            'draft_topic_ids' => json_encode([$kept->id, $deleted->id]),
+        ]);
+        $this->assertNotFalse($deleted->delete(), 'a topic used by a draft only can be deleted');
+
+        $this->assertTrue($draft->publish(), json_encode($draft->getErrors()));
+
+        $item->refresh();
+        $this->assertSame('Published title', $item->title);
+        $this->assertSame([$kept->id], $item->getTopicIds());
+    }
 }
