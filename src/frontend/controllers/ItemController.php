@@ -1,9 +1,9 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 19:33:22 UTC
 
 namespace dmstr\knowledgeLibrary\frontend\controllers;
 
 use dmstr\knowledgeLibrary\models\Item;
-use dmstr\knowledgeLibrary\models\Relation;
 use Yii;
 use yii\web\NotFoundHttpException;
 
@@ -64,51 +64,7 @@ class ItemController extends BaseController
         return $this->render('view', [
             'item' => $item,
             'version' => $version,
-            'relations' => $this->findVisibleRelations($item, date('Y-m-d')),
+            'relations' => $item->findVisibleRelations(date('Y-m-d')),
         ]);
-    }
-
-    /**
-     * Outgoing and incoming relations of the item whose other item is shown
-     * in the frontend (active, with a version valid at the date); relations
-     * to any other item are left out, like the item itself.
-     *
-     * Grouped by the label seen from the item, in the order of
-     * Relation::labels() (forward before inverse), the items of a group
-     * sorted by title and ID.
-     *
-     * @return array<string, Item[]> map `label => related items`
-     */
-    private function findVisibleRelations(Item $item, string $date): array
-    {
-        /** @var Relation[] $relations */
-        $relations = array_merge($item->outgoingRelations, $item->incomingRelations);
-        if ($relations === []) {
-            return [];
-        }
-
-        $otherIds = array_map(static fn (Relation $relation) => $relation->getOtherItemId($item->id), $relations);
-        $visible = Item::find()
-            ->active()
-            ->validAt($date)
-            ->andWhere([Item::tableName() . '.[[id]]' => array_values(array_unique($otherIds))])
-            ->orderBy(['title' => SORT_ASC, 'id' => SORT_ASC])
-            ->indexBy('id')
-            ->all();
-
-        $groups = [];
-        foreach (Relation::labels() as $labels) {
-            $groups[$labels['forward']] = [];
-            $groups[$labels['inverse']] = [];
-        }
-        foreach ($visible as $id => $other) {
-            foreach ($relations as $relation) {
-                if ($relation->getOtherItemId($item->id) === $id) {
-                    $groups[$relation->getLabelFor($item->id)][] = $other;
-                }
-            }
-        }
-
-        return array_filter($groups, static fn (array $items) => $items !== []);
     }
 }

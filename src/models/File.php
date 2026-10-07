@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 19:33:22 UTC
 
 namespace dmstr\knowledgeLibrary\models;
 
@@ -128,6 +129,26 @@ class File extends ActiveRecord
         $copy->save();
 
         return $copy;
+    }
+
+    /**
+     * Whether the file belongs to the published version valid at the date of
+     * an active item, i.e. is delivered to readers.
+     *
+     * @param string|null $date date in the format `Y-m-d`, today if null
+     */
+    public function belongsToValidVersion(?string $date = null): bool
+    {
+        $version = $this->version;
+        $item = $version?->item;
+        if ($version === null || $item === null) {
+            return false;
+        }
+        if ($version->status !== Version::STATUS_PUBLISHED || $item->is_archived) {
+            return false;
+        }
+
+        return $item->getValidVersion($date)?->id === $this->version_id;
     }
 
     public function getVersion(): ActiveQuery

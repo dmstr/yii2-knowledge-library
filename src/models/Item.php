@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 19:33:22 UTC
 
 namespace dmstr\knowledgeLibrary\models;
 
@@ -324,6 +325,52 @@ class Item extends ActiveRecord
             ->orderBy(['number' => SORT_DESC])
             ->limit(1)
             ->one();
+    }
+
+    /**
+     * Outgoing and incoming relations of the item whose other item is shown
+     * to readers (active, with a version valid at the date); relations to
+     * any other item are left out, like the item itself.
+     *
+     * Grouped by the label seen from the item, in the order of
+     * Relation::labels() (forward before inverse), the items of a group
+     * sorted by title and ID.
+     *
+     * @param string $date date in the format `Y-m-d`
+     *
+     * @return array<string, Item[]> map `label => related items`
+     */
+    public function findVisibleRelations(string $date): array
+    {
+        /** @var Relation[] $relations */
+        $relations = array_merge($this->outgoingRelations, $this->incomingRelations);
+        if ($relations === []) {
+            return [];
+        }
+
+        $otherIds = array_map(fn (Relation $relation): string => $relation->getOtherItemId($this->id), $relations);
+        $visible = static::find()
+            ->active()
+            ->validAt($date)
+            ->andWhere([static::tableName() . '.[[id]]' => array_values(array_unique($otherIds))])
+            ->orderBy(['title' => SORT_ASC, 'id' => SORT_ASC])
+            ->indexBy('id')
+            ->all();
+
+        $groups = [];
+        foreach (Relation::labels() as $labels) {
+            $groups[$labels['forward']] = [];
+            $groups[$labels['inverse']] = [];
+        }
+        foreach ($visible as $id => $other) {
+            foreach ($relations as $relation) {
+                if ($relation->getOtherItemId($this->id) === $id) {
+                    $groups[$relation->getLabelFor($this->id)][] = $other;
+                }
+            }
+        }
+
+        return array_filter($groups, static fn (array $items): bool => $items !== []);
     }
 
     /**

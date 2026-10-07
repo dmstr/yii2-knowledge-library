@@ -2,10 +2,11 @@
 
 [![tests](https://github.com/dmstr/yii2-knowledge-library/actions/workflows/tests.yml/badge.svg)](https://github.com/dmstr/yii2-knowledge-library/actions/workflows/tests.yml)
 
-A knowledge library for Yii2 applications. It consists of two modules:
+A knowledge library for Yii2 applications. It consists of three modules:
 
 - a **backend module** for managing knowledge items with versioned, time-valid content, review by a second person, relations between items and a change history
 - a **frontend module** that renders the currently valid content server-side, e.g. for a RAG crawler
+- an **MCP module**, a stateless [Model Context Protocol](https://modelcontextprotocol.io/) server giving AI clients read access to the currently valid content
 
 ## Data model
 
@@ -78,7 +79,7 @@ To install directly from the repository, add it as a VCS repository first:
 
 ## Configuration
 
-Register both modules in the application configuration:
+Register the modules in the application configuration:
 
 ```php
 return [
@@ -95,9 +96,16 @@ return [
             'class' => \dmstr\knowledgeLibrary\frontend\Module::class,
             'backendModuleId' => 'knowledge-library',
         ],
+        'knowledge-mcp' => [
+            'class' => \dmstr\knowledgeLibrary\mcp\Module::class,
+            'backendModuleId' => 'knowledge-library',
+            'authenticator' => ['class' => \yii\filters\auth\HttpBearerAuth::class],
+        ],
     ],
 ];
 ```
+
+The MCP module is optional; leave it out if the application has no AI clients.
 
 ### Backend module properties
 
@@ -114,6 +122,17 @@ return [
 | Property | Default | Description |
 | --- | --- | --- |
 | `backendModuleId` | `'knowledge-library'` | ID of the backend module whose configuration (file storage, user provider) the frontend module shares |
+
+### MCP module properties
+
+| Property | Default | Description |
+| --- | --- | --- |
+| `backendModuleId` | `'knowledge-library'` | ID of the backend module whose file storage the module reads the files from |
+| `authenticator` | `['class' => HttpBearerAuth::class]` | Configuration of the authentication filter (`yii\filters\auth\AuthMethod`) that logs the client in before the access check, e.g. `HttpBearerAuth`, `bizley\jwt\JwtHttpBearerAuth`, the package's `StaticTokenAuth` or a `CompositeAuth` of several; `null` attaches none, so only clients with a session of the application get access |
+| `serverName`, `serverVersion` | `'Knowledge Library'`, `'1.0.0'` | Server information announced to the client on `initialize` |
+| `instructions` | `null` | Instructions for the model announced on `initialize`; `null` uses the default text describing the tools |
+| `maxInlineFileSize` | `5242880` (5 MB) | Largest file in bytes that `knowledge_get_file` returns inline; larger files are answered with their download URL |
+| `tools` | the five tools below | Tool classes (or configuration arrays) of the server, each created with the module as constructor argument; override to add or remove tools |
 
 ## Backend pages
 
@@ -236,6 +255,56 @@ All three routes accept GET only; other methods are answered with 405.
 
 **Downloads.** `file/download` delivers only files of the version valid today of an item that is not archived, as download (`Content-Disposition: attachment`) with the original name. Files of any other version (draft, in review, historical, upcoming, withdrawn) and files of archived items answer with 404 ("The requested file does not exist."), as do unknown IDs and missing stored files. The files are read from the file storage of the backend module (`backendModuleId`).
 
+## MCP server
+
+The MCP module gives AI clients (e.g. a RAG service, Claude or any other MCP client) read access to the knowledge items valid today, with exactly the visibility rules of the frontend pages: active items with a version valid today, their files and their relations to such items; drafts, versions in review, withdrawn, historical and upcoming versions and archived items do not exist for the server. The module URL is the endpoint, e.g. `https://example.org/knowledge-mcp` for the configuration above (route `default/index`); `file/download` delivers the files of the valid versions like the frontend download, so a client can fetch a file with the same credentials.
+
+**Transport.** The server speaks JSON-RPC 2.0 over the Streamable HTTP transport, revisions 2025-03-26, 2025-06-18 and 2025-11-25, and is **stateless**: every POST is handled on its own, no `Mcp-Session-Id` is issued and none is expected, so clients keep working across deployments and restarts of the application. There is no server-initiated stream and no session to end, so GET and DELETE on the endpoint answer with 405. Only the `tools` capability is announced; `initialize`, `ping`, `tools/list` and `tools/call` are served, notifications and client responses are accepted and ignored (202), and other methods are answered with "method not found". A body that is no JSON-RPC message is answered with 400 and a JSON-RPC error.
+
+**Tools.** All tools are read-only (`readOnlyHint`) and return their data as `structuredContent` and, for clients without support for it, as JSON text:
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `knowledge_search` | `query` (substring of title, summary or text of the valid version, case-insensitive), `type_id`, `topic_id`, `limit` (1-100, default 20), `offset` | `total` and one page of `items` sorted by title, each with `id`, `title`, `type`, `topics`, `summary`, `valid_from`, `valid_until` (null for types without validity period), `published_at`, `version`, `updated_at` |
+| `knowledge_get_item` | `id` | The item as above plus `source` (`name`, `reference`, `url`), `content` (Markdown source of the valid version), `files` (`id`, `kind`, `title`, `name`, `mime_type`, `size`, `download_url`) and `relations` (`relation` label as seen from the item, `id`, `title`; only to items the server shows) |
+| `knowledge_get_file` | `id` | The file as embedded resource: `text/*` files as text, others as base64 `blob` with their MIME type, the download URL as `uri`; `structuredContent` carries the file data and the item. Files larger than `maxInlineFileSize` are a tool error naming the download URL |
+| `knowledge_list_types` | – | `types` with `id`, `name`, `has_validity_period`, `requires_review` and `item_count` (items valid today) |
+| `knowledge_list_topics` | – | `topics` with `id`, `name` and `item_count` (items valid today) |
+
+An unknown tool and invalid arguments are JSON-RPC errors (`-32602`); a call with valid arguments that cannot be answered (unknown or invalid item, missing file) is a tool result with `isError`, so the client can show the message to the model.
+
+**Authentication.** Every request carries its own credentials; the module disables the session of the user component for its requests, so no session is created or written. The `authenticator` filter is attached to the module before the route-based access check and must log the client in; a request it does not authenticate is answered with 401 and a `WWW-Authenticate: Bearer` challenge. The default `yii\filters\auth\HttpBearerAuth` resolves the token through `findIdentityByAccessToken()` of the identity class. `dmstr\knowledgeLibrary\mcp\auth\StaticTokenAuth` accepts configured tokens, e.g. a service token from the environment for a technical user, and leaves other requests to the next filter of a `CompositeAuth`:
+
+```php
+'knowledge-mcp' => [
+    'class' => \dmstr\knowledgeLibrary\mcp\Module::class,
+    'authenticator' => [
+        'class' => \yii\filters\auth\CompositeAuth::class,
+        'authMethods' => [
+            [
+                'class' => \dmstr\knowledgeLibrary\mcp\auth\StaticTokenAuth::class,
+                'tokens' => [getenv('KNOWLEDGE_MCP_TOKEN')],
+                'identity' => static fn () => User::findOne(['username' => getenv('KNOWLEDGE_MCP_USER')]),
+            ],
+            ['class' => \bizley\jwt\JwtHttpBearerAuth::class, 'throwException' => false],
+        ],
+    ],
+],
+```
+
+Empty tokens never match, so an unset environment variable does not open the endpoint. The authenticated identity still needs the permission of the module, see [Access control](#access-control).
+
+**Smoke test.** An `initialize` request must answer without `Mcp-Session-Id` header, and a `tools/list` request with an invented session ID must answer normally:
+
+```bash
+curl --silent --show-error --dump-header - \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' \
+  https://example.org/knowledge-mcp
+```
+
 ## Files
 
 Version files are stored in the flysystem filesystem of the component named by `fileStorage` under `<targetPath>/<item-id>/<file-id>.<ext>`, e.g. `knowledge-library/<item-uuid>/<file-uuid>.pdf`. The ID is the UUID of the file row, the extension comes from the original name; the original name (base name only) is kept in the file row together with MIME type, size, position and the SHA-256 hash of the content (`content_hash`). Uploads are read from their temporary file as stream, never loaded into memory as a whole.
@@ -259,6 +328,7 @@ The package brings the following migrations:
 | `m260928_203100_knowledge_library_routes_2` | Route permissions of the version wizard, the file download and the relations |
 | `m260928_223000_knowledge_library_history_details` | Structured details of history entries (`history.details`) |
 | `m260928_223100_knowledge_library_routes_3` | Route permissions of review, withdrawal, correction and archive |
+| `m261007_100000_knowledge_library_mcp_rbac` | Permission `knowledge-mcp` of the MCP module |
 | `i18n/m260928_100200_knowledge_library_translations` | Optional German translations, see [Translations](#translations) |
 | `i18n/m260929_120000_knowledge_library_translations_2` | Optional German translations of the titles of main documents |
 
@@ -312,7 +382,7 @@ Applications without a database message source must configure a message source f
 
 ## Access control
 
-Both modules use the route-based access control of `dmstr/yii2-web`.
+All modules use the route-based access control of `dmstr/yii2-web`.
 
 The backend module defines the following permissions:
 
@@ -347,6 +417,8 @@ Everyone who may open the detail page of an item may also download its files, in
 
 Access to the frontend module is granted by a permission named exactly like its module ID, i.e. `knowledge` for the configuration above. The RBAC migrations create the permission `knowledge` without assigning it; through the prefix resolution of `dmstr\web\User` it grants all frontend routes (`knowledge_item_index`, `knowledge_item_view`, `knowledge_file_download`), but no backend route, as `knowledge-library_...` does not start with `knowledge_`. The backend roles do not contain it: the application assigns it to the readers of the frontend, usually through a role of its own. Guests are redirected to the login, logged-in users without the permission get 403.
 
+The MCP module works the same way with the permission `knowledge-mcp` (migration `m261007_100000_knowledge_library_mcp_rbac`), which grants its routes `knowledge-mcp_default_index` and `knowledge-mcp_file_download`. It is separate from `knowledge`, so the application decides whether the readers of the frontend may also use the MCP server, e.g. by adding both permissions to the same role. A client the authenticator does not log in gets 401, an authenticated client without the permission 403.
+
 ## Running tests
 
 ```bash
@@ -354,7 +426,7 @@ composer install
 vendor/bin/phpunit
 ```
 
-The suite `unit` tests the models and migrations on an in-memory SQLite database. The suite `web` runs the backend and frontend pages through `Yii::$app->runAction()` in a web application (`tests/WebTestCase.php`, `tests/FrontendWebTestCase.php`) with the RBAC migrations of the package applied, so the route permissions are tested as well.
+The suite `unit` tests the models, the migrations and the JSON-RPC handling of the MCP server on an in-memory SQLite database. The suite `web` runs the backend and frontend pages and the MCP endpoint through `Yii::$app->runAction()` in a web application (`tests/WebTestCase.php`, `tests/FrontendWebTestCase.php`, `tests/McpWebTestCase.php`) with the RBAC migrations of the package applied, so the route permissions are tested as well.
 
 GitHub Actions runs both suites on PHP 8.1 to 8.4 for every push to `master` and every pull request (`.github/workflows/tests.yml`).
 

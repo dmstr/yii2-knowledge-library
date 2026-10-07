@@ -1,10 +1,10 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 19:33:22 UTC
 
 namespace dmstr\knowledgeLibrary\frontend\controllers;
 
 use dmstr\knowledgeLibrary\files\FileService;
 use dmstr\knowledgeLibrary\models\File;
-use dmstr\knowledgeLibrary\models\Version;
 use Yii;
 use yii\web\NotFoundHttpException;
 use yii\web\Response;
@@ -38,7 +38,7 @@ class FileController extends BaseController
             ->andWhere([File::tableName() . '.[[id]]' => $id])
             ->with('version.item')
             ->one();
-        if ($file === null || !$this->isVisible($file)) {
+        if ($file === null || !$file->belongsToValidVersion()) {
             throw new NotFoundHttpException(Yii::t('knowledge-library', 'The requested file does not exist.'));
         }
 
@@ -48,23 +48,5 @@ class FileController extends BaseController
         }
 
         return $response;
-    }
-
-    /**
-     * Whether the file belongs to the published version valid today of an
-     * active item.
-     */
-    private function isVisible(File $file): bool
-    {
-        $version = $file->version;
-        $item = $version?->item;
-        if ($version === null || $item === null) {
-            return false;
-        }
-        if ($version->status !== Version::STATUS_PUBLISHED || $item->is_archived) {
-            return false;
-        }
-
-        return $item->getValidVersion()?->id === $file->version_id;
     }
 }
