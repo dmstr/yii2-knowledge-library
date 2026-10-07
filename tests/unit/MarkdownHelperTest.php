@@ -1,4 +1,5 @@
 <?php
+// file generated with AI assistance: Claude Code - 2026-10-07 22:10:00 UTC
 
 namespace dmstr\knowledgeLibrary\tests\unit;
 
@@ -16,6 +17,25 @@ class MarkdownHelperTest extends TestCase
         $this->assertStringContainsString('<li>one</li>', $html);
     }
 
+    public function testRendersBlockquotesLinkTitlesAndAutolinks(): void
+    {
+        $html = MarkdownHelper::render("> quoted\n\nSee [docs](https://example.org/ \"Docs\") and <https://auto.example.org/>.");
+
+        $this->assertStringContainsString('<blockquote>', $html);
+        $this->assertStringContainsString('<p>quoted</p>', $html);
+        $this->assertStringContainsString('<a href="https://example.org/" title="Docs">docs</a>', $html);
+        $this->assertStringContainsString('<a href="https://auto.example.org/">https://auto.example.org/</a>', $html);
+        $this->assertStringNotContainsString('&gt; quoted', $html);
+    }
+
+    public function testCodeBlocksKeepAngleBracketsAndAmpersands(): void
+    {
+        $html = MarkdownHelper::render("```\nif (a > b && c < d) {}\n```");
+
+        $this->assertStringContainsString('<pre><code>if (a &gt; b &amp;&amp; c &lt; d) {}', $html);
+        $this->assertStringNotContainsString('&amp;gt;', $html);
+    }
+
     public function testScriptIsShownAsText(): void
     {
         $html = MarkdownHelper::render("Before <script>alert(1)</script> after");
@@ -29,7 +49,33 @@ class MarkdownHelperTest extends TestCase
         $html = MarkdownHelper::render('<img src="x" onerror="alert(1)">');
 
         $this->assertStringNotContainsString('<img', $html);
-        $this->assertStringContainsString('&lt;img src=&quot;x&quot; onerror=&quot;alert(1)&quot;&gt;', $html);
+        $this->assertStringContainsString('&lt;img src="x" onerror="alert(1)"&gt;', $html);
+    }
+
+    public function testBlockHtmlIsShownAsText(): void
+    {
+        $html = MarkdownHelper::render("<div onclick=\"alert(1)\">\n<p>inner</p>\n</div>\n\n<!-- a comment -->");
+
+        $this->assertStringNotContainsString('<div', $html);
+        $this->assertStringNotContainsString('<!--', $html);
+        $this->assertStringContainsString('&lt;div onclick="alert(1)"&gt;', $html);
+        $this->assertStringContainsString('&lt;!-- a comment --&gt;', $html);
+    }
+
+    public function testEntitiesAndBareAmpersandsAreKept(): void
+    {
+        $html = MarkdownHelper::render('Copyright &copy; Fish & Chips');
+
+        // The purifier normalizes entities to characters.
+        $this->assertStringContainsString('© Fish &amp; Chips', $html);
+    }
+
+    public function testJavascriptUrlsAreDropped(): void
+    {
+        $html = MarkdownHelper::render('[click](javascript:alert(1)) and ![x](javascript:alert(2)) and [ok](https://example.org/)');
+
+        $this->assertStringNotContainsString('javascript:', $html);
+        $this->assertStringContainsString('<a href="https://example.org/">ok</a>', $html);
     }
 
     public function testEmptyTextRendersNothing(): void
