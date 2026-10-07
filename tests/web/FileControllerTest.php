@@ -33,6 +33,7 @@ class FileControllerTest extends WebTestCase
         $headers = $response->getHeaders();
         $this->assertStringStartsWith('inline; filename="Forest law \\"2026\\".pdf"', $headers->get('Content-Disposition'));
         $this->assertSame('application/pdf', $headers->get('Content-Type'));
+        $this->assertSame('nosniff', $headers->get('X-Content-Type-Options'));
         $this->assertEquals(strlen(self::CONTENT), $headers->get('Content-Length'));
         $this->assertSame(self::CONTENT, $this->readResponseStream($response));
     }

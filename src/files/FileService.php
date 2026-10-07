@@ -301,6 +301,10 @@ class FileService
             $options['fileSize'] = (int)$file->size;
         }
 
+        // The MIME type is the one detected on upload; browsers must not
+        // guess another one from the content, e.g. HTML from a text file.
+        $response->getHeaders()->set('X-Content-Type-Options', 'nosniff');
+
         return $response->sendStreamAsFile($stream, $file->name, $options);
     }
 

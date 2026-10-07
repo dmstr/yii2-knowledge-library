@@ -3,10 +3,9 @@
 
 namespace dmstr\knowledgeLibrary\mcp\tools;
 
+use dmstr\knowledgeLibrary\files\FileService;
 use dmstr\knowledgeLibrary\mcp\ToolException;
 use dmstr\knowledgeLibrary\models\File;
-use League\Flysystem\FilesystemException;
-use Yii;
 
 /**
  * `knowledge_get_file`: the content of a file of a version valid today, as
@@ -63,16 +62,16 @@ class GetFileTool extends BaseTool
             throw new ToolException($this->tooLargeMessage($meta, (int)$file->size));
         }
 
-        $filesystem = $this->module->getBackendModule()->getFilesystem();
+        // Through the service like the downloads, so the storage named by the
+        // file row is used and read errors are logged in one place.
+        $stream = (new FileService($this->module->getBackendModule()))->readStream($file);
+        if ($stream === null) {
+            throw new ToolException("The stored file of \"{$file->name}\" is missing or could not be read.");
+        }
         try {
-            if (!$filesystem->fileExists($file->path)) {
-                throw new ToolException("The stored file of \"{$file->name}\" is missing.");
-            }
-            $content = $filesystem->read($file->path);
-        } catch (FilesystemException $e) {
-            Yii::error("Reading the file {$file->path} of file row {$file->id} failed: " . $e->getMessage(), __METHOD__);
-
-            throw new ToolException("The file \"{$file->name}\" could not be read from the file storage.");
+            $content = (string)stream_get_contents($stream);
+        } finally {
+            fclose($stream);
         }
         if (strlen($content) > $maxSize) {
             throw new ToolException($this->tooLargeMessage($meta, strlen($content)));
