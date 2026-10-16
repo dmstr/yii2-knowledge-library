@@ -14,6 +14,7 @@ use dmstr\web\traits\AccessBehaviorTrait;
 use Yii;
 use yii\base\InvalidConfigException;
 use yii\filters\auth\HttpBearerAuth;
+use yii\web\Response;
 use yii\web\User;
 
 /**
@@ -114,7 +115,8 @@ class Module extends \yii\base\Module
         if ($user instanceof User) {
             $user->enableSession = false;
         }
-
+        // Also for errors thrown before the action, e.g. 401 of the authenticator.
+        Yii::$app->getResponse()->format = Response::FORMAT_JSON;
         return parent::beforeAction($action);
     }
 

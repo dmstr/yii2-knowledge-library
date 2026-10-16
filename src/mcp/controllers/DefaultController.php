@@ -8,7 +8,6 @@ use dmstr\knowledgeLibrary\mcp\Module;
 use yii\filters\VerbFilter;
 use yii\helpers\ArrayHelper;
 use yii\web\Controller;
-use yii\web\Response;
 
 /**
  * The MCP endpoint: every POST carries one JSON-RPC message (or a batch) and
@@ -34,9 +33,6 @@ class DefaultController extends Controller
     public function init()
     {
         parent::init();
-
-        // Also for errors thrown before the action, e.g. 401 of the authenticator.
-        $this->response->format = Response::FORMAT_JSON;
     }
 
     public function behaviors()
