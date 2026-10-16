@@ -8,7 +8,6 @@ use dmstr\knowledgeLibrary\mcp\Module;
 use yii\filters\VerbFilter;
 use yii\helpers\ArrayHelper;
 use yii\web\Controller;
-use yii\web\Response;
 
 /**
  * The MCP endpoint: every POST carries one JSON-RPC message (or a batch) and
