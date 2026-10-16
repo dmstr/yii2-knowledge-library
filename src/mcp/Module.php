@@ -114,7 +114,8 @@ class Module extends \yii\base\Module
         if ($user instanceof User) {
             $user->enableSession = false;
         }
-
+        // Also for errors thrown before the action, e.g. 401 of the authenticator.
+        $this->response->format = Response::FORMAT_JSON;
         return parent::beforeAction($action);
     }
 
